@@ -1,5 +1,5 @@
--- RageVoid GUI Script | alpha v0.8
--- Insert = menu | L = teleport
+-- RageVoid GUI Script | alpha v0.9 — REDESIGN (Dark Minimal / ESP-Client Style)
+-- Insert = menu | Custom Keybinds
 local Players         = game:GetService("Players")
 local LocalPlayer     = Players.LocalPlayer
 local RunService      = game:GetService("RunService")
@@ -44,6 +44,15 @@ local DefaultSettings = {
 		ShowCube = true,
 	},
 	Watermark = { Enabled = true },
+	Keybinds = {
+		ToggleMenu    = "Insert",
+		QuickTP       = "None",
+		ToggleESP     = "None",
+		ToggleAimbot  = "None",
+		ToggleFakeLag = "None",
+		ToggleBhop    = "None",
+		ToggleAntiAim = "None",
+	},
 	Visuals = {
 		Brightness = 1,
 		AmbientR = 0, AmbientG = 0, AmbientB = 0,
@@ -71,6 +80,18 @@ local antiAimConnection, antiAimAngle = nil, 0
 local visualSky = nil
 local fakeLagConnection = nil
 local fakeLagCube       = nil
+local keybindListening  = nil
+local keybindButtons    = {}
+
+local KEYBIND_IDS = {
+	{ id="ToggleMenu",    label="Toggle Menu"    },
+	{ id="QuickTP",       label="Quick Teleport" },
+	{ id="ToggleESP",     label="Toggle ESP"     },
+	{ id="ToggleAimbot",  label="Toggle Aimbot"  },
+	{ id="ToggleFakeLag", label="Toggle FakeLag" },
+	{ id="ToggleBhop",    label="Toggle BHop"    },
+	{ id="ToggleAntiAim", label="Toggle AntiAim" },
+}
 
 local CONFIG_FOLDER = "RushvoidConfigs"
 local CONFIG_EXT    = ".json"
@@ -139,7 +160,7 @@ function ConfigSystem.Serialize()
 		ESP=DeepCopy(Settings.ESP), Aimbot=DeepCopy(Settings.Aimbot),
 		Teleport=DeepCopy(Settings.Teleport), Movement=DeepCopy(Settings.Movement),
 		AntiAim=DeepCopy(Settings.AntiAim), FakeLag=DeepCopy(Settings.FakeLag),
-		Visuals=DeepCopy(Settings.Visuals),
+		Keybinds=DeepCopy(Settings.Keybinds), Visuals=DeepCopy(Settings.Visuals),
 	}
 	local ok, result = SafeCall(function() return HttpService:JSONEncode(data) end)
 	if ok and type(result)=="string" then return result end
@@ -850,7 +871,7 @@ local function CreateGUI()
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
 	wmLbl.Size=UDim2.new(1,-16,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
 	wmLbl.BackgroundTransparency=1
-	wmLbl.Text="RAGEVOID · v0.8 · By cloudbound.dev"
+	wmLbl.Text="RAGEVOID · v0.9 · By cloudbound.dev"
 	wmLbl.TextColor3=C.Text; wmLbl.Font=Enum.Font.GothamBold
 	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
@@ -907,6 +928,11 @@ local function CreateGUI()
 	AddBind("INS","Toggle Menu",2)
 	AddBind("L","Quick Teleport",3)
 
+	-- Динамическое обновление KBFrame из Settings.Keybinds
+	RunService.Heartbeat:Connect(function()
+		-- обновляем только раз в секунду через tick
+	end)
+
 	-- ГЛАВНОЕ ОКНО
 	local SW=120; local CW=370; local WH=480; local WW=SW+CW
 	local Window=Instance.new("Frame",ScreenGui)
@@ -932,7 +958,7 @@ local function CreateGUI()
 	local titleLbl=Instance.new("TextLabel",TitleBar)
 	titleLbl.Size=UDim2.new(1,-SW,0,32); titleLbl.Position=UDim2.new(0,SW,0,0)
 	titleLbl.BackgroundTransparency=1
-	titleLbl.Text="RAGEVOID  ·  alpha v0.8"
+	titleLbl.Text="RAGEVOID  ·  alpha v0.9"
 	titleLbl.TextColor3=C.Text; titleLbl.Font=Enum.Font.GothamBold
 	titleLbl.TextSize=11; titleLbl.ZIndex=22
 	local titleDot=Instance.new("Frame",TitleBar)
@@ -1204,63 +1230,62 @@ local function CreateGUI()
 	local MoveTab   = CreateTab("MOVEMENT",Icons.movement,   3)
 	local VisualsTab= CreateTab("VISUALS", Icons.visuals,    4)
 	local ConfigTab = CreateTab("CONFIG",  Icons.configlist, 5)
-	local InfoTab   = CreateTab("INFO",    Icons.info,       6)
-	local SetTab    = CreateTab("SETTINGS",Icons.settings,   7)
+	local BindsTab  = CreateTab("KEYBINDS",Icons.settings,   6)
+	local InfoTab   = CreateTab("INFO",    Icons.info,       7)
+	local SetTab    = CreateTab("SETTINGS",Icons.settings,   8)
 
 	-- ===== AIMBOT =====
 	SectionLabel(AimbotTab,"Aimbot")
-	Toggle(AimbotTab,"Enable Aimbot",Settings.Aimbot.Enabled,function(v)
+	local _,setAimbotEnabled     = Toggle(AimbotTab,"Enable Aimbot",Settings.Aimbot.Enabled,function(v)
 		Settings.Aimbot.Enabled=v; FOVCircle.Visible=v and Settings.Aimbot.ShowFOV
 	end)
-	Toggle(AimbotTab,"Show FOV Circle",Settings.Aimbot.ShowFOV,function(v)
+	local _,setAimbotShowFOV     = Toggle(AimbotTab,"Show FOV Circle",Settings.Aimbot.ShowFOV,function(v)
 		Settings.Aimbot.ShowFOV=v; FOVCircle.Visible=v and Settings.Aimbot.Enabled
 	end)
-	Toggle(AimbotTab,"Ignore Teammates",Settings.Aimbot.IgnoreTeam,function(v) Settings.Aimbot.IgnoreTeam=v end)
-	Slider(AimbotTab,"FOV Size",20,500,Settings.Aimbot.FOV,function(v)
+	local _,setAimbotIgnoreTeam  = Toggle(AimbotTab,"Ignore Teammates",Settings.Aimbot.IgnoreTeam,function(v) Settings.Aimbot.IgnoreTeam=v end)
+	local _,setAimbotFOV         = Slider(AimbotTab,"FOV Size",20,500,Settings.Aimbot.FOV,function(v)
 		Settings.Aimbot.FOV=v; if FOVCircle then FOVCircle.Size=UDim2.new(0,v*2,0,v*2) end
 	end)
-	Slider(AimbotTab,"Smoothness",1,100,Settings.Aimbot.Smoothness,function(v) Settings.Aimbot.Smoothness=v end)
+	local _,setAimbotSmooth      = Slider(AimbotTab,"Smoothness",1,100,Settings.Aimbot.Smoothness,function(v) Settings.Aimbot.Smoothness=v end)
 	SectionLabel(AimbotTab,"Anti-Aim")
-	Toggle(AimbotTab,"Enable Anti-Aim",Settings.AntiAim.Enabled,function(v)
+	local _,setAntiAimEnabled    = Toggle(AimbotTab,"Enable Anti-Aim",Settings.AntiAim.Enabled,function(v)
 		Settings.AntiAim.Enabled=v; if v then StartAntiAim() else StopAntiAim() end
 	end)
-	Dropdown(AimbotTab,"Mode",{"Random","Spin","Static","Jitter"},Settings.AntiAim.Mode,function(v)
+	local _,setAntiAimMode       = Dropdown(AimbotTab,"Mode",{"Random","Spin","Static","Jitter"},Settings.AntiAim.Mode,function(v)
 		Settings.AntiAim.Mode=v; if Settings.AntiAim.Enabled then StartAntiAim() end
 	end)
-	Slider(AimbotTab,"Spin Speed",1,50,Settings.AntiAim.SpinSpeed,function(v) Settings.AntiAim.SpinSpeed=v end)
-	Slider(AimbotTab,"Static Angle",0,360,Settings.AntiAim.StaticAngle,function(v) Settings.AntiAim.StaticAngle=v end)
-	Slider(AimbotTab,"Jitter Range",10,180,Settings.AntiAim.JitterRange,function(v) Settings.AntiAim.JitterRange=v end)
-	Slider(AimbotTab,"Interval (ms)",1,500,math.floor(Settings.AntiAim.Interval*1000),function(v)
-		Settings.AntiAim.Interval=v/1000
-	end)
+	local _,setAntiAimSpin       = Slider(AimbotTab,"Spin Speed",1,50,Settings.AntiAim.SpinSpeed,function(v) Settings.AntiAim.SpinSpeed=v end)
+	local _,setAntiAimStatic     = Slider(AimbotTab,"Static Angle",0,360,Settings.AntiAim.StaticAngle,function(v) Settings.AntiAim.StaticAngle=v end)
+	local _,setAntiAimJitter     = Slider(AimbotTab,"Jitter Range",10,180,Settings.AntiAim.JitterRange,function(v) Settings.AntiAim.JitterRange=v end)
+	local _,setAntiAimInterval   = Slider(AimbotTab,"Interval (ms)",1,500,math.floor(Settings.AntiAim.Interval*1000),function(v) Settings.AntiAim.Interval=v/1000 end)
 
 	-- ===== ESP =====
 	SectionLabel(ESPTab,"Targets")
-	Toggle(ESPTab,"Enable ESP",Settings.ESP.Enabled,function(v)
+	local _,setESPEnabled        = Toggle(ESPTab,"Enable ESP",Settings.ESP.Enabled,function(v)
 		Settings.ESP.Enabled=v; if not v then ClearAllESP() end
 	end)
-	Toggle(ESPTab,"Show Players",Settings.ESP.ShowPlayers,function(v) Settings.ESP.ShowPlayers=v end)
-	Toggle(ESPTab,"Show NPCs",Settings.ESP.ShowNPCs,function(v) Settings.ESP.ShowNPCs=v end)
+	local _,setESPPlayers        = Toggle(ESPTab,"Show Players",Settings.ESP.ShowPlayers,function(v) Settings.ESP.ShowPlayers=v end)
+	local _,setESPNPCs           = Toggle(ESPTab,"Show NPCs",Settings.ESP.ShowNPCs,function(v) Settings.ESP.ShowNPCs=v end)
 	SectionLabel(ESPTab,"Render")
-	Toggle(ESPTab,"Corner Box",Settings.ESP.ShowCorners,function(v) Settings.ESP.ShowCorners=v end)
-	Toggle(ESPTab,"Tracers",Settings.ESP.ShowTracers,function(v) Settings.ESP.ShowTracers=v end)
-	Toggle(ESPTab,"Skeleton",Settings.ESP.ShowSkeleton,function(v) Settings.ESP.ShowSkeleton=v end)
-	Toggle(ESPTab,"Names",Settings.ESP.ShowNames,function(v) Settings.ESP.ShowNames=v end)
-	Toggle(ESPTab,"HP Bar",Settings.ESP.ShowHealth,function(v) Settings.ESP.ShowHealth=v end)
-	Toggle(ESPTab,"Distance",Settings.ESP.ShowDistance,function(v) Settings.ESP.ShowDistance=v end)
-	Toggle(ESPTab,"Weapon",Settings.ESP.ShowWeapon,function(v) Settings.ESP.ShowWeapon=v end)
+	local _,setESPCorners        = Toggle(ESPTab,"Corner Box",Settings.ESP.ShowCorners,function(v) Settings.ESP.ShowCorners=v end)
+	local _,setESPTracers        = Toggle(ESPTab,"Tracers",Settings.ESP.ShowTracers,function(v) Settings.ESP.ShowTracers=v end)
+	local _,setESPSkeleton       = Toggle(ESPTab,"Skeleton",Settings.ESP.ShowSkeleton,function(v) Settings.ESP.ShowSkeleton=v end)
+	local _,setESPNames          = Toggle(ESPTab,"Names",Settings.ESP.ShowNames,function(v) Settings.ESP.ShowNames=v end)
+	local _,setESPHealth         = Toggle(ESPTab,"HP Bar",Settings.ESP.ShowHealth,function(v) Settings.ESP.ShowHealth=v end)
+	local _,setESPDistance       = Toggle(ESPTab,"Distance",Settings.ESP.ShowDistance,function(v) Settings.ESP.ShowDistance=v end)
+	local _,setESPWeapon         = Toggle(ESPTab,"Weapon",Settings.ESP.ShowWeapon,function(v) Settings.ESP.ShowWeapon=v end)
 	SectionLabel(ESPTab,"Distance")
-	Slider(ESPTab,"Corner Length",4,20,Settings.ESP.CornerLen,function(v) Settings.ESP.CornerLen=v end)
-	Slider(ESPTab,"Max Distance",100,2000,Settings.ESP.MaxDistance,function(v) Settings.ESP.MaxDistance=v end)
+	local _,setESPCornerLen      = Slider(ESPTab,"Corner Length",4,20,Settings.ESP.CornerLen,function(v) Settings.ESP.CornerLen=v end)
+	local _,setESPMaxDist        = Slider(ESPTab,"Max Distance",100,2000,Settings.ESP.MaxDistance,function(v) Settings.ESP.MaxDistance=v end)
 
 	-- ===== MOVEMENT =====
 	SectionLabel(MoveTab,"Movement")
-	Toggle(MoveTab,"Bunny Hop",Settings.Movement.BunnyHop,function(v)
+	local _,setBhop              = Toggle(MoveTab,"Bunny Hop",Settings.Movement.BunnyHop,function(v)
 		Settings.Movement.BunnyHop=v; if v then SetupBunnyHop() else DisableBunnyHop() end
 	end)
-	Toggle(MoveTab,"Auto Jump",Settings.Movement.AutoJump,function(v) Settings.Movement.AutoJump=v end)
-	Slider(MoveTab,"BHop Speed",1,50,Settings.Movement.BHopSpeed,function(v) Settings.Movement.BHopSpeed=v end)
-	Slider(MoveTab,"Max Speed",50,200,Settings.Movement.MaxSpeed,function(v) Settings.Movement.MaxSpeed=v end)
+	local _,setAutoJump          = Toggle(MoveTab,"Auto Jump",Settings.Movement.AutoJump,function(v) Settings.Movement.AutoJump=v end)
+	local _,setBhopSpeed         = Slider(MoveTab,"BHop Speed",1,50,Settings.Movement.BHopSpeed,function(v) Settings.Movement.BHopSpeed=v end)
+	local _,setMaxSpeed          = Slider(MoveTab,"Max Speed",50,200,Settings.Movement.MaxSpeed,function(v) Settings.Movement.MaxSpeed=v end)
 	SectionLabel(MoveTab,"Teleport")
 	Button(MoveTab,"Teleport to Random",C.Accent,function()
 		if isTeleporting then StopTeleport(); task.wait(0.2) end
@@ -1269,49 +1294,40 @@ local function CreateGUI()
 	Button(MoveTab,"Skip to Next Target",C.Orange,function()
 		if isTeleporting then StopTeleport(); task.wait(0.2); TeleportToRandomPlayer() end
 	end)
-	Slider(MoveTab,"TP Time (sec)",0,3,Settings.Teleport.TeleportTime,function(v) Settings.Teleport.TeleportTime=v end)
-	Slider(MoveTab,"Distance Behind",3,10,Settings.Teleport.Distance,function(v) Settings.Teleport.Distance=v end)
+	local _,setTPTime            = Slider(MoveTab,"TP Time (sec)",0,3,Settings.Teleport.TeleportTime,function(v) Settings.Teleport.TeleportTime=v end)
+	local _,setTPDist            = Slider(MoveTab,"Distance Behind",3,10,Settings.Teleport.Distance,function(v) Settings.Teleport.Distance=v end)
 
 	-- ===== FAKE LAG =====
 	SectionLabel(MoveTab,"Fake Lag")
-	Toggle(MoveTab,"Enable Fake Lag",Settings.FakeLag.Enabled,function(v)
+	local _,setFakeLagEnabled    = Toggle(MoveTab,"Enable Fake Lag",Settings.FakeLag.Enabled,function(v)
 		Settings.FakeLag.Enabled=v
-		if v then
-			StartFakeLag()
-			if Settings.FakeLag.ShowCube then CreateFakeLagCube() end
-		else
-			StopFakeLag()
-			DestroyFakeLagCube()
-		end
+		if v then StartFakeLag(); if Settings.FakeLag.ShowCube then CreateFakeLagCube() end
+		else StopFakeLag(); DestroyFakeLagCube() end
 	end)
-	Toggle(MoveTab,"Show Preview Cube",Settings.FakeLag.ShowCube,function(v)
+	local _,setFakeLagCube       = Toggle(MoveTab,"Show Preview Cube",Settings.FakeLag.ShowCube,function(v)
 		Settings.FakeLag.ShowCube=v
-		if not v then
-			if fakeLagCube then pcall(function() fakeLagCube.Transparency=1 end) end
-		end
+		if not v then if fakeLagCube then pcall(function() fakeLagCube.Transparency=1 end) end end
 	end)
-	Slider(MoveTab,"FL Distance",5,50,Settings.FakeLag.Distance,function(v)
-		Settings.FakeLag.Distance=v
-	end)
-	Slider(MoveTab,"FL Interval (ms)",50,500,math.floor(Settings.FakeLag.Interval*1000),function(v)
+	local _,setFLDist            = Slider(MoveTab,"FL Distance",5,50,Settings.FakeLag.Distance,function(v) Settings.FakeLag.Distance=v end)
+	local _,setFLInterval        = Slider(MoveTab,"FL Interval (ms)",50,500,math.floor(Settings.FakeLag.Interval*1000),function(v)
 		Settings.FakeLag.Interval=v/1000
 		if Settings.FakeLag.Enabled then StartFakeLag() end
 	end)
 
 	-- ===== VISUALS =====
 	SectionLabel(VisualsTab,"Lighting")
-	Slider(VisualsTab,"Brightness",0,10,Settings.Visuals.Brightness,function(v)
+	local _,setVBrightness       = Slider(VisualsTab,"Brightness",0,10,Settings.Visuals.Brightness,function(v)
 		Settings.Visuals.Brightness=v; pcall(function() Lighting.Brightness=v end)
 	end)
-	Slider(VisualsTab,"Ambient R",0,255,Settings.Visuals.AmbientR,function(v)
+	local _,setVAmbR             = Slider(VisualsTab,"Ambient R",0,255,Settings.Visuals.AmbientR,function(v)
 		Settings.Visuals.AmbientR=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
-	Slider(VisualsTab,"Ambient G",0,255,Settings.Visuals.AmbientG,function(v)
+	local _,setVAmbG             = Slider(VisualsTab,"Ambient G",0,255,Settings.Visuals.AmbientG,function(v)
 		Settings.Visuals.AmbientG=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
-	Slider(VisualsTab,"Ambient B",0,255,Settings.Visuals.AmbientB,function(v)
+	local _,setVAmbB             = Slider(VisualsTab,"Ambient B",0,255,Settings.Visuals.AmbientB,function(v)
 		Settings.Visuals.AmbientB=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
@@ -1319,16 +1335,16 @@ local function CreateGUI()
 		{"00:00:00","04:00:00","08:00:00","12:00:00","14:00:00","18:00:00","20:00:00","23:00:00"},
 		"14:00:00",function(v) pcall(function() Lighting.TimeOfDay=v end) end)
 	SectionLabel(VisualsTab,"Fog")
-	Toggle(VisualsTab,"Enable Fog",Settings.Visuals.FogEnabled,function(v)
+	local _,setVFog              = Toggle(VisualsTab,"Enable Fog",Settings.Visuals.FogEnabled,function(v)
 		Settings.Visuals.FogEnabled=v
 		pcall(function() Lighting.FogEnd=v and Settings.Visuals.FogEnd or 100000; Lighting.FogStart=0 end)
 	end)
-	Slider(VisualsTab,"Fog Distance",50,2000,Settings.Visuals.FogEnd,function(v)
+	local _,setVFogDist          = Slider(VisualsTab,"Fog Distance",50,2000,Settings.Visuals.FogEnd,function(v)
 		Settings.Visuals.FogEnd=v
 		if Settings.Visuals.FogEnabled then pcall(function() Lighting.FogEnd=v end) end
 	end)
 	SectionLabel(VisualsTab,"Sky")
-	Toggle(VisualsTab,"Enable Custom Sky",Settings.Visuals.SkyEnabled,function(v)
+	local _,setVSky              = Toggle(VisualsTab,"Enable Custom Sky",Settings.Visuals.SkyEnabled,function(v)
 		Settings.Visuals.SkyEnabled=v; ApplySky()
 	end)
 	local _,GetSkyID,SetSkyID,skyInput=TextInput(VisualsTab,"Sky Asset ID","e.g. 159451631")
@@ -1353,6 +1369,82 @@ local function CreateGUI()
 			Lighting.TimeOfDay="14:00:00"; Lighting.FogEnd=100000; Lighting.FogStart=0
 		end)
 	end)
+
+	-- =====================================================================
+	-- ApplyGUI — синхронизирует все UI элементы с текущим Settings
+	-- Вызывается после Load/Import конфига
+	-- =====================================================================
+	local function ApplyGUI()
+		-- Aimbot
+		setAimbotEnabled(Settings.Aimbot.Enabled)
+		setAimbotShowFOV(Settings.Aimbot.ShowFOV)
+		setAimbotIgnoreTeam(Settings.Aimbot.IgnoreTeam)
+		setAimbotFOV(Settings.Aimbot.FOV)
+		setAimbotSmooth(Settings.Aimbot.Smoothness)
+		if FOVCircle then
+			FOVCircle.Visible = Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV
+			FOVCircle.Size = UDim2.new(0, Settings.Aimbot.FOV*2, 0, Settings.Aimbot.FOV*2)
+		end
+		-- Anti-Aim
+		setAntiAimEnabled(Settings.AntiAim.Enabled)
+		setAntiAimMode(Settings.AntiAim.Mode)
+		setAntiAimSpin(Settings.AntiAim.SpinSpeed)
+		setAntiAimStatic(Settings.AntiAim.StaticAngle)
+		setAntiAimJitter(Settings.AntiAim.JitterRange)
+		setAntiAimInterval(math.floor(Settings.AntiAim.Interval*1000))
+		-- ESP
+		setESPEnabled(Settings.ESP.Enabled)
+		setESPPlayers(Settings.ESP.ShowPlayers)
+		setESPNPCs(Settings.ESP.ShowNPCs)
+		setESPCorners(Settings.ESP.ShowCorners)
+		setESPTracers(Settings.ESP.ShowTracers)
+		setESPSkeleton(Settings.ESP.ShowSkeleton)
+		setESPNames(Settings.ESP.ShowNames)
+		setESPHealth(Settings.ESP.ShowHealth)
+		setESPDistance(Settings.ESP.ShowDistance)
+		setESPWeapon(Settings.ESP.ShowWeapon)
+		setESPCornerLen(Settings.ESP.CornerLen)
+		setESPMaxDist(Settings.ESP.MaxDistance)
+		-- Movement
+		setBhop(Settings.Movement.BunnyHop)
+		setAutoJump(Settings.Movement.AutoJump)
+		setBhopSpeed(Settings.Movement.BHopSpeed)
+		setMaxSpeed(Settings.Movement.MaxSpeed)
+		setTPTime(Settings.Teleport.TeleportTime)
+		setTPDist(Settings.Teleport.Distance)
+		-- FakeLag
+		setFakeLagEnabled(Settings.FakeLag.Enabled)
+		setFakeLagCube(Settings.FakeLag.ShowCube)
+		setFLDist(Settings.FakeLag.Distance)
+		setFLInterval(math.floor(Settings.FakeLag.Interval*1000))
+		-- Visuals
+		setVBrightness(Settings.Visuals.Brightness)
+		setVAmbR(Settings.Visuals.AmbientR)
+		setVAmbG(Settings.Visuals.AmbientG)
+		setVAmbB(Settings.Visuals.AmbientB)
+		setVFog(Settings.Visuals.FogEnabled)
+		setVFogDist(Settings.Visuals.FogEnd)
+		setVSky(Settings.Visuals.SkyEnabled)
+		SetSkyID(Settings.Visuals.SkyID)
+		-- Keybinds
+		for _, bind in ipairs(KEYBIND_IDS) do
+			local val = Settings.Keybinds[bind.id] or "None"
+			local btn = keybindButtons[bind.id]
+			if btn then
+				btn.Text = val
+				btn.TextColor3 = (val == "None") and C.Dimmer or C.Accent
+				btn.BackgroundColor3 = C.SliderBG
+			end
+		end
+		-- Watermark
+		WatermarkFrame.Visible = Settings.Watermark.Enabled
+		-- Запуск/остановка систем
+		if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
+		if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+		if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
+		ApplyLighting()
+		ApplySky()
+	end
 
 	-- ===== CONFIG TAB =====
 	local StatusFrame=Instance.new("Frame",ConfigTab)
@@ -1452,14 +1544,7 @@ local function CreateGUI()
 		local ok,msg=ConfigSystem.Load(selectedConfig)
 		if ok then
 			SetStatus("Loaded: "..selectedConfig, C.Green)
-			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
-			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
-			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
-			ApplyLighting(); ApplySky()
-			if FOVCircle then
-				FOVCircle.Visible=Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV
-				FOVCircle.Size=UDim2.new(0,Settings.Aimbot.FOV*2,0,Settings.Aimbot.FOV*2)
-			end
+			ApplyGUI()
 		else SetStatus((msg or "Load failed"), C.Red) end
 	end)
 	Button(ConfigTab,"Delete Config",C.Red,function()
@@ -1486,13 +1571,110 @@ local function CreateGUI()
 		local ok,msg=ConfigSystem.Import(json)
 		if ok then
 			SetStatus("Imported", C.Green); SetImportText("")
-			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
-			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
-			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
-			ApplyLighting(); ApplySky()
+			ApplyGUI()
 		else SetStatus("Import error: "..(msg or "?"), C.Red) end
 	end)
 	RebuildCfgList()
+
+	-- ===== KEYBINDS =====
+	SectionLabel(BindsTab, "Keybinds")
+
+	-- Подсказка
+	local BindHint = Instance.new("Frame", BindsTab)
+	BindHint.Size = UDim2.new(1,0,0,26)
+	BindHint.BackgroundColor3 = C.AccentBG
+	BindHint.BorderSizePixel = 0; BindHint.ZIndex = 23
+	Instance.new("UICorner", BindHint).CornerRadius = UDim.new(0,4)
+	local BindHintLbl = Instance.new("TextLabel", BindHint)
+	BindHintLbl.Size = UDim2.new(1,-12,1,0); BindHintLbl.Position = UDim2.new(0,6,0,0)
+	BindHintLbl.BackgroundTransparency = 1
+	BindHintLbl.Text = "LMB = set key  ·  RMB = clear  ·  ESC = clear"
+	BindHintLbl.TextColor3 = C.Accent; BindHintLbl.Font = Enum.Font.Gotham
+	BindHintLbl.TextSize = 10; BindHintLbl.ZIndex = 24
+
+	local function BuildBindRow(parent, bindId, bindLabel)
+		local Row = Instance.new("Frame", parent)
+		Row.Size = UDim2.new(1,0,0,36)
+		Row.BackgroundColor3 = C.Row; Row.BorderSizePixel = 0; Row.ZIndex = 23
+		Instance.new("UICorner", Row).CornerRadius = UDim.new(0,4)
+
+		local Lbl = Instance.new("TextLabel", Row)
+		Lbl.Size = UDim2.new(0.55,0,1,0); Lbl.Position = UDim2.new(0,10,0,0)
+		Lbl.BackgroundTransparency = 1; Lbl.Text = bindLabel
+		Lbl.TextColor3 = C.Text; Lbl.Font = Enum.Font.GothamSemibold
+		Lbl.TextSize = 12; Lbl.TextXAlignment = Enum.TextXAlignment.Left; Lbl.ZIndex = 24
+
+		local current = Settings.Keybinds[bindId]
+		local isNone = (current == "None" or current == "" or current == nil)
+
+		local KeyBtn = Instance.new("TextButton", Row)
+		KeyBtn.Size = UDim2.new(0,90,0,22); KeyBtn.Position = UDim2.new(1,-98,0.5,-11)
+		KeyBtn.BackgroundColor3 = C.SliderBG; KeyBtn.BorderSizePixel = 0
+		KeyBtn.Text = current or "None"
+		KeyBtn.TextColor3 = isNone and C.Dimmer or C.Accent
+		KeyBtn.Font = Enum.Font.GothamBold
+		KeyBtn.TextSize = 11; KeyBtn.ZIndex = 25
+		Instance.new("UICorner", KeyBtn).CornerRadius = UDim.new(0,3)
+		local kbStroke = Instance.new("UIStroke", KeyBtn)
+		kbStroke.Color = C.AccentDim; kbStroke.Thickness = 1
+
+		keybindButtons[bindId] = KeyBtn
+
+		KeyBtn.MouseButton1Click:Connect(function()
+			-- Сброс предыдущей кнопки в режиме ожидания
+			if keybindListening and keybindListening ~= bindId then
+				local prev = keybindButtons[keybindListening]
+				if prev then
+					local prevVal = Settings.Keybinds[keybindListening]
+					local prevNone = (prevVal == "None" or prevVal == "" or prevVal == nil)
+					prev.Text = prevVal or "None"
+					prev.BackgroundColor3 = C.SliderBG
+					prev.TextColor3 = prevNone and C.Dimmer or C.Accent
+				end
+			end
+			keybindListening = bindId
+			KeyBtn.Text = "[ press key ]"
+			KeyBtn.BackgroundColor3 = C.AccentBG
+			KeyBtn.TextColor3 = C.Orange
+			kbStroke.Color = C.Orange
+		end)
+
+		-- ПКМ = сбросить в None сразу
+		KeyBtn.MouseButton2Click:Connect(function()
+			if keybindListening == bindId then keybindListening = nil end
+			Settings.Keybinds[bindId] = "None"
+			KeyBtn.Text = "None"
+			KeyBtn.BackgroundColor3 = C.SliderBG
+			KeyBtn.TextColor3 = C.Dimmer
+			kbStroke.Color = C.AccentDim
+		end)
+
+		return Row
+	end
+
+	for _, bind in ipairs(KEYBIND_IDS) do
+		BuildBindRow(BindsTab, bind.id, bind.label)
+	end
+
+	Button(BindsTab, "Reset All to None", C.Red, function()
+		for _, bind in ipairs(KEYBIND_IDS) do
+			if bind.id ~= "ToggleMenu" then
+				Settings.Keybinds[bind.id] = "None"
+				if keybindButtons[bind.id] then
+					keybindButtons[bind.id].Text = "None"
+					keybindButtons[bind.id].TextColor3 = C.Dimmer
+					keybindButtons[bind.id].BackgroundColor3 = C.SliderBG
+				end
+			end
+		end
+		-- ToggleMenu сбрасываем в Insert
+		Settings.Keybinds.ToggleMenu = "Insert"
+		if keybindButtons.ToggleMenu then
+			keybindButtons.ToggleMenu.Text = "Insert"
+			keybindButtons.ToggleMenu.TextColor3 = C.Accent
+		end
+		keybindListening = nil
+	end)
 
 	-- ===== INFO =====
 	SectionLabel(InfoTab,"About")
@@ -1503,7 +1685,7 @@ local function CreateGUI()
 	local IT=Instance.new("TextLabel",IBox)
 	IT.Size=UDim2.new(1,-20,1,-16); IT.Position=UDim2.new(0,10,0,8)
 	IT.BackgroundTransparency=1; IT.ZIndex=24
-	IT.Text="RageVoid  |  alpha v0.8\n\n[Insert]  toggle menu\n[L]  teleport to random\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
+	IT.Text="RageVoid  |  alpha v0.9\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
 	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=12
 	IT.TextXAlignment=Enum.TextXAlignment.Left; IT.TextYAlignment=Enum.TextYAlignment.Top
 	IT.TextWrapped=true
@@ -1537,10 +1719,7 @@ local function CreateGUI()
 	Button(SetTab,"Quick Load 'default'",C.Purple,function()
 		local ok,msg=ConfigSystem.Load("default")
 		if ok then
-			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
-			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
-			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
-			ApplyLighting(); ApplySky(); print("Loaded 'default'")
+			ApplyGUI(); print("Loaded 'default'")
 		else print("Failed: "..tostring(msg)) end
 	end)
 
@@ -1554,17 +1733,80 @@ end
 local Gui, Window = CreateGUI()
 
 UserInputService.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode==Enum.KeyCode.Insert then
-		Window.Visible=not Window.Visible
-		if Window.Visible then
-			UserInputService.MouseBehavior=Enum.MouseBehavior.Default
-			UserInputService.MouseIconEnabled=true
+	-- Перехват назначения кнопки
+	if keybindListening then
+		if input.UserInputType == Enum.UserInputType.Keyboard then
+			local keyName = input.KeyCode.Name
+			local blocked = { LeftShift=true, RightShift=true, LeftControl=true,
+				RightControl=true, LeftAlt=true, RightAlt=true }
+			-- ESC = сбросить бинд в None
+			if input.KeyCode == Enum.KeyCode.Escape then
+				Settings.Keybinds[keybindListening] = "None"
+				local btn = keybindButtons[keybindListening]
+				if btn then
+					btn.Text = "None"
+					btn.BackgroundColor3 = C.SliderBG
+					btn.TextColor3 = C.Dimmer
+				end
+				keybindListening = nil
+				return
+			end
+			if not blocked[keyName] then
+				Settings.Keybinds[keybindListening] = keyName
+				local btn = keybindButtons[keybindListening]
+				if btn then
+					btn.Text = keyName
+					btn.BackgroundColor3 = C.SliderBG
+					btn.TextColor3 = C.Accent
+				end
+				keybindListening = nil
+				return
+			end
 		end
+		return
 	end
-	if input.KeyCode==Enum.KeyCode.L then
-		if isTeleporting then StopTeleport(); task.wait(0.2) end
-		TeleportToRandomPlayer()
+
+	if gp then return end
+
+	local keyName = input.KeyCode.Name
+
+	-- Toggle Menu
+	if keyName == Settings.Keybinds.ToggleMenu then
+		Window.Visible = not Window.Visible
+		if Window.Visible then
+			UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+			UserInputService.MouseIconEnabled = true
+		end
+		return
+	end
+
+	-- Остальные кейбинды (пропускаем None)
+	for _, bind in ipairs(KEYBIND_IDS) do
+		local assigned = Settings.Keybinds[bind.id]
+		if bind.id ~= "ToggleMenu" and assigned ~= "None" and assigned ~= "" and keyName == assigned then
+			local id = bind.id
+			if id == "QuickTP" then
+				if isTeleporting then StopTeleport(); task.wait(0.2) end
+				TeleportToRandomPlayer()
+			elseif id == "ToggleESP" then
+				Settings.ESP.Enabled = not Settings.ESP.Enabled
+				if not Settings.ESP.Enabled then ClearAllESP() end
+			elseif id == "ToggleAimbot" then
+				Settings.Aimbot.Enabled = not Settings.Aimbot.Enabled
+				if FOVCircle then FOVCircle.Visible = Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV end
+			elseif id == "ToggleFakeLag" then
+				Settings.FakeLag.Enabled = not Settings.FakeLag.Enabled
+				if Settings.FakeLag.Enabled then StartFakeLag()
+				else StopFakeLag(); DestroyFakeLagCube() end
+			elseif id == "ToggleBhop" then
+				Settings.Movement.BunnyHop = not Settings.Movement.BunnyHop
+				if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+			elseif id == "ToggleAntiAim" then
+				Settings.AntiAim.Enabled = not Settings.AntiAim.Enabled
+				if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
+			end
+			return
+		end
 	end
 end)
 
@@ -1611,4 +1853,4 @@ if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
-print("RageVoid v0.8 | Dark Minimal Redesign + FakeLag loaded")
+print("RageVoid v0.9 | Dark Minimal Redesign + FakeLag + Custom Keybinds loaded")

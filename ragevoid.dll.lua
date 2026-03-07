@@ -1,4 +1,4 @@
--- RageVoid GUI Script | alpha v0.7 — REDESIGN (Dark Minimal / ESP-Client Style)
+-- RageVoid GUI Script | alpha v0.8
 -- Insert = menu | L = teleport
 local Players         = game:GetService("Players")
 local LocalPlayer     = Players.LocalPlayer
@@ -37,6 +37,12 @@ local DefaultSettings = {
 		Enabled = false, Mode = "Random",
 		SpinSpeed = 15, StaticAngle = 180, JitterRange = 45, Interval = 0.07,
 	},
+	FakeLag = {
+		Enabled  = false,
+		Distance = 15,
+		Interval = 0.12,
+		ShowCube = true,
+	},
 	Watermark = { Enabled = true },
 	Visuals = {
 		Brightness = 1,
@@ -63,6 +69,8 @@ local isTeleporting, currentTeleportTarget, teleportConnection = false, nil, nil
 local npcCache, lastNPCUpdate, NPC_UPDATE_INTERVAL = {}, 0, 2
 local antiAimConnection, antiAimAngle = nil, 0
 local visualSky = nil
+local fakeLagConnection = nil
+local fakeLagCube       = nil
 
 local CONFIG_FOLDER = "RushvoidConfigs"
 local CONFIG_EXT    = ".json"
@@ -71,39 +79,30 @@ local CONFIG_EXT    = ".json"
 -- ЦВЕТА — НОВАЯ ПАЛИТРА (Dark Minimal / ESP-Client)
 -- =====================================================================
 local C = {
-	-- Фоны
-	BG        = Color3.fromRGB(13, 13, 15),       -- почти чёрный
-	Sidebar   = Color3.fromRGB(17, 17, 20),       -- sidebar чуть светлее
-	Content   = Color3.fromRGB(17, 17, 20),       -- контент-панель
-	Row       = Color3.fromRGB(24, 24, 28),       -- строки настроек
-	RowHover  = Color3.fromRGB(30, 30, 35),       -- hover на строках
-
-	-- Текст
-	Text      = Color3.fromRGB(220, 220, 228),    -- основной текст
-	Dim       = Color3.fromRGB(95, 95, 108),      -- приглушённый
-	Dimmer    = Color3.fromRGB(60, 60, 70),       -- очень приглушённый
-
-	-- Акцентные (один главный — холодный белесо-синий)
-	Accent    = Color3.fromRGB(130, 180, 255),    -- основной акцент (esp-client blue)
-	AccentDim = Color3.fromRGB(65, 100, 160),     -- приглушённый акцент
-	AccentBG  = Color3.fromRGB(20, 28, 45),       -- фон с акцентом
-
-	-- Статусные
+	BG        = Color3.fromRGB(13, 13, 15),
+	Sidebar   = Color3.fromRGB(17, 17, 20),
+	Content   = Color3.fromRGB(17, 17, 20),
+	Row       = Color3.fromRGB(24, 24, 28),
+	RowHover  = Color3.fromRGB(30, 30, 35),
+	Text      = Color3.fromRGB(220, 220, 228),
+	Dim       = Color3.fromRGB(95, 95, 108),
+	Dimmer    = Color3.fromRGB(60, 60, 70),
+	Accent    = Color3.fromRGB(130, 180, 255),
+	AccentDim = Color3.fromRGB(65, 100, 160),
+	AccentBG  = Color3.fromRGB(20, 28, 45),
 	Green     = Color3.fromRGB(80, 200, 120),
 	Red       = Color3.fromRGB(200, 60, 60),
 	Orange    = Color3.fromRGB(210, 145, 50),
 	Purple    = Color3.fromRGB(140, 90, 220),
 	Teal      = Color3.fromRGB(50, 190, 170),
-
-	-- UI-элементы
 	SliderBG  = Color3.fromRGB(28, 28, 33),
 	SliderFill= Color3.fromRGB(100, 155, 230),
 	ToggleOff = Color3.fromRGB(40, 40, 46),
 	ToggleOn  = Color3.fromRGB(55, 140, 90),
-	Border    = Color3.fromRGB(35, 35, 42),       -- тонкие бордеры
+	Border    = Color3.fromRGB(35, 35, 42),
 	ActiveTab = Color3.fromRGB(22, 22, 27),
-	TabInd    = Color3.fromRGB(100, 155, 230),    -- индикатор активного таба
-	Header    = Color3.fromRGB(15, 15, 18),       -- заголовок окна
+	TabInd    = Color3.fromRGB(100, 155, 230),
+	Header    = Color3.fromRGB(15, 15, 18),
 }
 
 local Icons = {
@@ -117,7 +116,7 @@ local Icons = {
 }
 
 -- =====================================================================
--- КОНФИГ (без изменений)
+-- КОНФИГ
 -- =====================================================================
 local ConfigSystem = {}
 local FS_AVAILABLE = (isfolder ~= nil and writefile ~= nil and readfile ~= nil)
@@ -139,7 +138,8 @@ function ConfigSystem.Serialize()
 	local data = {
 		ESP=DeepCopy(Settings.ESP), Aimbot=DeepCopy(Settings.Aimbot),
 		Teleport=DeepCopy(Settings.Teleport), Movement=DeepCopy(Settings.Movement),
-		AntiAim=DeepCopy(Settings.AntiAim), Visuals=DeepCopy(Settings.Visuals),
+		AntiAim=DeepCopy(Settings.AntiAim), FakeLag=DeepCopy(Settings.FakeLag),
+		Visuals=DeepCopy(Settings.Visuals),
 	}
 	local ok, result = SafeCall(function() return HttpService:JSONEncode(data) end)
 	if ok and type(result)=="string" then return result end
@@ -262,7 +262,7 @@ local function ApplyLighting()
 end
 
 -- =====================================================================
--- ESP (Drawing API — без изменений)
+-- ESP (Drawing API)
 -- =====================================================================
 local function HPColor(pct)
 	if pct > 0.6 then return Color3.fromRGB(50,220,80)
@@ -653,7 +653,158 @@ local function AimAt(target)
 end
 
 -- =====================================================================
--- GUI — ПОЛНЫЙ РЕДИЗАЙН
+-- FAKE LAG (forward teleport + cube preview)
+-- =====================================================================
+
+local function CreateFakeLagCube()
+	if fakeLagCube then
+		pcall(function() fakeLagCube:Destroy() end)
+	end
+	local cube = Instance.new("Part")
+	cube.Name           = "FakeLagPreview"
+	cube.Size           = Vector3.new(3, 3, 3)
+	cube.Anchored       = true
+	cube.CanCollide     = false
+	cube.CanQuery       = false
+	cube.CastShadow     = false
+	cube.Transparency   = 0.55
+	cube.Material       = Enum.Material.Neon
+	cube.Color          = Color3.fromRGB(100, 155, 230)
+	cube.Parent         = Workspace
+
+	local sel = Instance.new("SelectionBox")
+	sel.Adornee             = cube
+	sel.Color3              = Color3.fromRGB(130, 180, 255)
+	sel.LineThickness       = 0.04
+	sel.SurfaceTransparency = 1
+	sel.SurfaceColor3       = Color3.fromRGB(130, 180, 255)
+	sel.Parent              = Workspace
+
+	fakeLagCube = cube
+end
+
+local function DestroyFakeLagCube()
+	if fakeLagCube then
+		for _, v in ipairs(Workspace:GetChildren()) do
+			if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
+				pcall(function() v:Destroy() end)
+			end
+		end
+		pcall(function() fakeLagCube:Destroy() end)
+		fakeLagCube = nil
+	end
+end
+
+-- Проверка: есть ли земля под позицией (не телепортируем в воздухе)
+local function IsGroundBelow(pos, char)
+	local rp = RaycastParams.new()
+	rp.FilterDescendantsInstances = { char }
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.IgnoreWater = true
+	return Workspace:Raycast(pos + Vector3.new(0, 1, 0), Vector3.new(0, -7, 0), rp) ~= nil
+end
+
+-- Проверка: нет ли стены между текущей и целевой позицией
+local function IsPathClear(fromPos, toPos, char)
+	local rp = RaycastParams.new()
+	rp.FilterDescendantsInstances = { char }
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.IgnoreWater = true
+	local dir = toPos - fromPos
+	local res = Workspace:Raycast(fromPos, dir, rp)
+	return res == nil
+end
+
+local function GetFakeLagTarget(char)
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then return nil end
+	local dist    = Settings.FakeLag.Distance
+	local forward = root.CFrame.LookVector
+	local origin  = root.Position
+	local flatFwd = Vector3.new(forward.X, 0, forward.Z)
+	if flatFwd.Magnitude < 0.001 then return nil end
+	local target  = origin + flatFwd.Unit * dist
+	if not IsGroundBelow(target, char) then return nil end
+	if not IsPathClear(origin + Vector3.new(0, 1, 0), target + Vector3.new(0, 1, 0), char) then return nil end
+	return target
+end
+
+local function UpdateFakeLagCube()
+	if not Settings.FakeLag.Enabled or not Settings.FakeLag.ShowCube then
+		if fakeLagCube then
+			pcall(function() fakeLagCube.Transparency = 1 end)
+		end
+		return
+	end
+	local char = LocalPlayer.Character
+	local root = char and char:FindFirstChild("HumanoidRootPart")
+	if not root then
+		if fakeLagCube then pcall(function() fakeLagCube.Transparency = 1 end) end
+		return
+	end
+	if not fakeLagCube or not fakeLagCube.Parent then
+		CreateFakeLagCube()
+	end
+	local target = GetFakeLagTarget(char)
+	if target then
+		-- Синий = телепорт возможен
+		fakeLagCube.Transparency = 0.55
+		fakeLagCube.CFrame       = CFrame.new(target)
+		fakeLagCube.Color        = Color3.fromRGB(100, 155, 230)
+		for _, v in ipairs(Workspace:GetChildren()) do
+			if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
+				v.Color3 = Color3.fromRGB(130, 180, 255)
+			end
+		end
+	else
+		-- Красный = заблокировано (стена / воздух)
+		local forward = root.CFrame.LookVector
+		local flatFwd = Vector3.new(forward.X, 0, forward.Z)
+		if flatFwd.Magnitude > 0.001 then
+			local blocked = root.Position + flatFwd.Unit * Settings.FakeLag.Distance
+			fakeLagCube.Transparency = 0.65
+			fakeLagCube.CFrame       = CFrame.new(blocked)
+			fakeLagCube.Color        = Color3.fromRGB(200, 60, 60)
+			for _, v in ipairs(Workspace:GetChildren()) do
+				if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
+					v.Color3 = Color3.fromRGB(200, 60, 60)
+				end
+			end
+		end
+	end
+end
+
+local function StopFakeLag()
+	if fakeLagConnection then
+		fakeLagConnection:Disconnect()
+		fakeLagConnection = nil
+	end
+end
+
+local function StartFakeLag()
+	StopFakeLag()
+	if not Settings.FakeLag.Enabled then return end
+	local lastTick = 0
+	fakeLagConnection = RunService.Heartbeat:Connect(function()
+		if not Settings.FakeLag.Enabled then return end
+		local now = tick()
+		if now - lastTick < Settings.FakeLag.Interval then return end
+		lastTick = now
+		local char = LocalPlayer.Character
+		local root = char and char:FindFirstChild("HumanoidRootPart")
+		local hum  = char and char:FindFirstChild("Humanoid")
+		if not root or not hum or hum.Health <= 0 then return end
+		-- Не телепортируем в воздухе
+		if not IsOnGround(char) then return end
+		local target = GetFakeLagTarget(char)
+		if target then
+			root.CFrame = CFrame.new(target, target + root.CFrame.LookVector)
+		end
+	end)
+end
+
+-- =====================================================================
+-- GUI
 -- =====================================================================
 local function CreateGUI()
 	ScreenGui=Instance.new("ScreenGui")
@@ -672,9 +823,7 @@ local function CreateGUI()
 	local fovSt=Instance.new("UIStroke",FOVCircle)
 	fovSt.Color=C.Accent; fovSt.Thickness=1; fovSt.Transparency=0.4
 
-	-- =====================================================================
-	-- WATERMARK — новый стиль (строгий, тонкий)
-	-- =====================================================================
+	-- WATERMARK
 	WatermarkFrame=Instance.new("Frame",ScreenGui)
 	WatermarkFrame.Size=UDim2.new(0,230,0,22)
 	WatermarkFrame.Position=UDim2.new(0,8,0,60)
@@ -683,16 +832,12 @@ local function CreateGUI()
 	WatermarkFrame.ZIndex=100
 	WatermarkFrame.Visible=Settings.Watermark.Enabled
 	Instance.new("UICorner",WatermarkFrame).CornerRadius=UDim.new(0,4)
-
 	local wmStroke=Instance.new("UIStroke",WatermarkFrame)
 	wmStroke.Color=C.Border; wmStroke.Thickness=1; wmStroke.Transparency=0
-
-	-- Акцентная полоска слева
 	local wmAccent=Instance.new("Frame",WatermarkFrame)
 	wmAccent.Size=UDim2.new(0,2,1,-4); wmAccent.Position=UDim2.new(0,4,0,2)
 	wmAccent.BackgroundColor3=C.Accent; wmAccent.BorderSizePixel=0
 	Instance.new("UICorner",wmAccent).CornerRadius=UDim.new(1,0)
-
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
 	wmLbl.Size=UDim2.new(1,-16,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
 	wmLbl.BackgroundTransparency=1
@@ -701,9 +846,7 @@ local function CreateGUI()
 	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
 
-	-- =====================================================================
-	-- KEYBINDS — минималистичный
-	-- =====================================================================
+	-- KEYBINDS
 	local KBFrame=Instance.new("Frame",ScreenGui)
 	KBFrame.Size=UDim2.new(0,160,0,0)
 	KBFrame.Position=UDim2.new(0,1500,0,500)
@@ -716,14 +859,11 @@ local function CreateGUI()
 	Instance.new("UICorner",KBFrame).CornerRadius=UDim.new(0,4)
 	local kbSt=Instance.new("UIStroke",KBFrame)
 	kbSt.Color=C.Border; kbSt.Thickness=1
-
 	local kbPad=Instance.new("UIPadding",KBFrame)
 	kbPad.PaddingLeft=UDim.new(0,8); kbPad.PaddingRight=UDim.new(0,8)
 	kbPad.PaddingTop=UDim.new(0,6); kbPad.PaddingBottom=UDim.new(0,6)
-
 	local kbLayout=Instance.new("UIListLayout",KBFrame)
 	kbLayout.Padding=UDim.new(0,3); kbLayout.SortOrder=Enum.SortOrder.LayoutOrder
-
 	local kbTitle=Instance.new("TextLabel",KBFrame)
 	kbTitle.Size=UDim2.new(1,0,0,16)
 	kbTitle.BackgroundTransparency=1
@@ -731,8 +871,6 @@ local function CreateGUI()
 	kbTitle.TextColor3=C.Dim; kbTitle.Font=Enum.Font.GothamBold
 	kbTitle.TextSize=9; kbTitle.TextXAlignment=Enum.TextXAlignment.Left
 	kbTitle.LayoutOrder=0
-
-	-- Разделитель
 	local kbDiv=Instance.new("Frame",KBFrame)
 	kbDiv.Size=UDim2.new(1,0,0,1)
 	kbDiv.BackgroundColor3=C.Border; kbDiv.BorderSizePixel=0
@@ -742,7 +880,6 @@ local function CreateGUI()
 		local row=Instance.new("Frame",KBFrame)
 		row.Size=UDim2.new(1,0,0,18)
 		row.BackgroundTransparency=1; row.ZIndex=56; row.LayoutOrder=order
-
 		local keyLbl=Instance.new("TextLabel",row)
 		keyLbl.Size=UDim2.new(0,36,1,0)
 		keyLbl.BackgroundColor3=C.AccentBG; keyLbl.BorderSizePixel=0
@@ -750,7 +887,6 @@ local function CreateGUI()
 		keyLbl.Font=Enum.Font.GothamBold; keyLbl.TextSize=9
 		keyLbl.ZIndex=57
 		Instance.new("UICorner",keyLbl).CornerRadius=UDim.new(0,3)
-
 		local descLbl=Instance.new("TextLabel",row)
 		descLbl.Size=UDim2.new(1,-44,1,0); descLbl.Position=UDim2.new(0,42,0,0)
 		descLbl.BackgroundTransparency=1
@@ -762,10 +898,7 @@ local function CreateGUI()
 	AddBind("INS","Toggle Menu",2)
 	AddBind("L","Quick Teleport",3)
 
-	-- =====================================================================
 	-- ГЛАВНОЕ ОКНО
-	-- =====================================================================
-	-- Размеры: sidebar шире (120px), контент (370px), высота 480px
 	local SW=120; local CW=370; local WH=480; local WW=SW+CW
 	local Window=Instance.new("Frame",ScreenGui)
 	Window.Name="Window"; Window.Size=UDim2.new(0,WW,0,WH)
@@ -777,82 +910,64 @@ local function CreateGUI()
 	local winSt=Instance.new("UIStroke",Window)
 	winSt.Color=C.Border; winSt.Thickness=1
 
-	-- ЗАГОЛОВОК ОКНА (тонкая полоска сверху)
 	local TitleBar=Instance.new("Frame",Window)
 	TitleBar.Size=UDim2.new(0,WW,0,32); TitleBar.Position=UDim2.new(0,0,0,0)
 	TitleBar.BackgroundColor3=C.Header; TitleBar.BorderSizePixel=0; TitleBar.ZIndex=21
-	-- Верхние скруглённые углы
 	Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,6)
-	-- Нижняя плашка чтобы скрыть нижние углы titlebar
 	local tbFix=Instance.new("Frame",TitleBar)
 	tbFix.Size=UDim2.new(1,0,0,8); tbFix.Position=UDim2.new(0,0,1,-8)
 	tbFix.BackgroundColor3=C.Header; tbFix.BorderSizePixel=0; tbFix.ZIndex=21
-
-	-- Акцентная линия под заголовком
 	local titleLine=Instance.new("Frame",Window)
 	titleLine.Size=UDim2.new(0,WW,0,1); titleLine.Position=UDim2.new(0,0,0,32)
 	titleLine.BackgroundColor3=C.Border; titleLine.BorderSizePixel=0; titleLine.ZIndex=22
-
 	local titleLbl=Instance.new("TextLabel",TitleBar)
 	titleLbl.Size=UDim2.new(1,-SW,0,32); titleLbl.Position=UDim2.new(0,SW,0,0)
 	titleLbl.BackgroundTransparency=1
-	titleLbl.Text="RAGEVOID  ·  alpha v0.7"
+	titleLbl.Text="RAGEVOID  ·  alpha v0.8"
 	titleLbl.TextColor3=C.Text; titleLbl.Font=Enum.Font.GothamBold
 	titleLbl.TextSize=11; titleLbl.ZIndex=22
-
-	-- Маленький цветной dot в заголовке
 	local titleDot=Instance.new("Frame",TitleBar)
 	titleDot.Size=UDim2.new(0,6,0,6); titleDot.Position=UDim2.new(0,SW+10,0.5,-3)
 	titleDot.BackgroundColor3=C.Accent; titleDot.BorderSizePixel=0; titleDot.ZIndex=23
 	Instance.new("UICorner",titleDot).CornerRadius=UDim.new(1,0)
 
-	-- SIDEBAR
 	local Sidebar=Instance.new("Frame",Window)
 	Sidebar.Size=UDim2.new(0,SW,1,-33); Sidebar.Position=UDim2.new(0,0,0,33)
 	Sidebar.BackgroundColor3=C.Sidebar; Sidebar.BorderSizePixel=0; Sidebar.ZIndex=21
-
-	-- Вертикальный разделитель sidebar / content
 	local sideDiv=Instance.new("Frame",Window)
 	sideDiv.Size=UDim2.new(0,1,1,-33); sideDiv.Position=UDim2.new(0,SW,0,33)
 	sideDiv.BackgroundColor3=C.Border; sideDiv.BorderSizePixel=0; sideDiv.ZIndex=22
-
-	-- CONTENT PANEL
 	local ContentPanel=Instance.new("Frame",Window)
 	ContentPanel.Size=UDim2.new(0,CW-1,1,-33); ContentPanel.Position=UDim2.new(0,SW+1,0,33)
 	ContentPanel.BackgroundColor3=C.Content; ContentPanel.BorderSizePixel=0; ContentPanel.ZIndex=21
 
 	-- TABS
 	local tabList={}
-	local TAB_H=40    -- высота таба
-	local TAB_PAD=6   -- отступ
+	local TAB_H=40
+	local TAB_PAD=6
 	local TAB_ICON=18
 
 	local function CreateTab(name, iconId, order)
-		-- Кнопка таба
 		local TabBtn=Instance.new("TextButton",Sidebar)
 		TabBtn.Size=UDim2.new(1,0,0,TAB_H)
 		TabBtn.Position=UDim2.new(0,0,0,TAB_PAD+(order-1)*(TAB_H+2))
 		TabBtn.BackgroundColor3=C.Sidebar; TabBtn.BorderSizePixel=0
 		TabBtn.Text=""; TabBtn.AutoButtonColor=false; TabBtn.ZIndex=22
-		-- Индикатор активного таба — вертикальная синяя линия справа
 		local Ind=Instance.new("Frame",TabBtn)
 		Ind.Size=UDim2.new(0,2,0,TAB_H-12); Ind.Position=UDim2.new(1,-2,0.5,-(TAB_H-12)/2)
 		Ind.BackgroundColor3=C.TabInd; Ind.BorderSizePixel=0; Ind.Visible=false; Ind.ZIndex=25
 		Instance.new("UICorner",Ind).CornerRadius=UDim.new(1,0)
-		-- Иконка
 		local Icon=Instance.new("ImageLabel",TabBtn)
 		Icon.Size=UDim2.new(0,TAB_ICON,0,TAB_ICON)
 		Icon.Position=UDim2.new(0,10,0.5,-TAB_ICON/2)
 		Icon.BackgroundTransparency=1; Icon.Image=iconId
 		Icon.ImageColor3=C.Dimmer; Icon.ScaleType=Enum.ScaleType.Fit; Icon.ZIndex=23
-		-- Текст таба
 		local Lbl=Instance.new("TextLabel",TabBtn)
 		Lbl.Size=UDim2.new(1,-(10+TAB_ICON+8),1,0)
 		Lbl.Position=UDim2.new(0,10+TAB_ICON+8,0,0)
 		Lbl.BackgroundTransparency=1; Lbl.Text=name:upper()
 		Lbl.TextColor3=C.Dimmer; Lbl.Font=Enum.Font.GothamSemibold
 		Lbl.TextSize=11; Lbl.TextXAlignment=Enum.TextXAlignment.Left; Lbl.ZIndex=23
-		-- Контент
 		local Content=Instance.new("ScrollingFrame",ContentPanel)
 		Content.Size=UDim2.new(1,-10,1,-8); Content.Position=UDim2.new(0,5,0,4)
 		Content.BackgroundTransparency=1; Content.BorderSizePixel=0
@@ -862,9 +977,7 @@ local function CreateGUI()
 		local CList=Instance.new("UIListLayout",Content)
 		CList.Padding=UDim.new(0,6); CList.SortOrder=Enum.SortOrder.LayoutOrder
 		Instance.new("UIPadding",Content).PaddingTop=UDim.new(0,6)
-
 		table.insert(tabList,{btn=TabBtn,content=Content,icon=Icon,lbl=Lbl,ind=Ind})
-
 		TabBtn.MouseButton1Click:Connect(function()
 			for _,t in pairs(tabList) do
 				t.content.Visible=false
@@ -877,7 +990,6 @@ local function CreateGUI()
 			Icon.ImageColor3=C.Accent; Lbl.TextColor3=C.Text
 			Ind.Visible=true
 		end)
-
 		if order==1 then
 			Content.Visible=true; TabBtn.BackgroundColor3=C.ActiveTab
 			Icon.ImageColor3=C.Accent; Lbl.TextColor3=C.Text; Ind.Visible=true
@@ -885,19 +997,13 @@ local function CreateGUI()
 		return Content
 	end
 
-	-- =====================================================================
-	-- UI HELPERS — РЕДИЗАЙН
-	-- =====================================================================
-
-	-- Заголовок секции: горизонтальная линия + текст
+	-- UI HELPERS
 	local function SectionLabel(parent, text)
 		local Wrap=Instance.new("Frame",parent)
 		Wrap.Size=UDim2.new(1,0,0,22); Wrap.BackgroundTransparency=1; Wrap.ZIndex=23
-		-- Линия
 		local line=Instance.new("Frame",Wrap)
 		line.Size=UDim2.new(1,0,0,1); line.Position=UDim2.new(0,0,1,-1)
 		line.BackgroundColor3=C.Border; line.BorderSizePixel=0; line.ZIndex=23
-		-- Текст
 		local lbl=Instance.new("TextLabel",Wrap)
 		lbl.Size=UDim2.new(1,0,0,18); lbl.Position=UDim2.new(0,0,0,0)
 		lbl.BackgroundTransparency=1
@@ -906,53 +1012,42 @@ local function CreateGUI()
 		lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.ZIndex=24
 	end
 
-	-- Toggle: плоский, строгий
 	local function Toggle(parent, text, default, cb)
 		local Row=Instance.new("Frame",parent)
 		Row.Size=UDim2.new(1,0,0,34); Row.BackgroundColor3=C.Row
 		Row.BorderSizePixel=0; Row.ZIndex=23
 		Instance.new("UICorner",Row).CornerRadius=UDim.new(0,4)
-
-		-- Hover effect
 		local Hover=Instance.new("Frame",Row)
 		Hover.Size=UDim2.new(1,0,1,0); Hover.BackgroundColor3=Color3.fromRGB(255,255,255)
 		Hover.BackgroundTransparency=1; Hover.BorderSizePixel=0; Hover.ZIndex=23
 		Instance.new("UICorner",Hover).CornerRadius=UDim.new(0,4)
-
 		local RowLbl=Instance.new("TextLabel",Row)
 		RowLbl.Size=UDim2.new(0.72,0,1,0); RowLbl.Position=UDim2.new(0,10,0,0)
 		RowLbl.BackgroundTransparency=1; RowLbl.Text=text; RowLbl.TextColor3=C.Text
 		RowLbl.Font=Enum.Font.GothamSemibold; RowLbl.TextSize=12
 		RowLbl.TextXAlignment=Enum.TextXAlignment.Left; RowLbl.ZIndex=24
-
-		-- Toggle track: тонкий и чёткий
 		local Track=Instance.new("Frame",Row)
 		Track.Size=UDim2.new(0,34,0,18)
 		Track.Position=UDim2.new(1,-44,0.5,-9)
 		Track.BackgroundColor3=default and C.ToggleOn or C.ToggleOff
 		Track.BorderSizePixel=0; Track.ZIndex=24
 		Instance.new("UICorner",Track).CornerRadius=UDim.new(1,0)
-
 		local Knob=Instance.new("Frame",Track)
 		Knob.Size=UDim2.new(0,12,0,12)
 		Knob.Position=default and UDim2.new(1,-14,0.5,-6) or UDim2.new(0,2,0.5,-6)
 		Knob.BackgroundColor3=Color3.new(1,1,1); Knob.BorderSizePixel=0; Knob.ZIndex=25
 		Instance.new("UICorner",Knob).CornerRadius=UDim.new(1,0)
-
 		local enabled=default
 		local Click=Instance.new("TextButton",Row)
 		Click.Size=UDim2.new(1,0,1,0); Click.BackgroundTransparency=1; Click.Text=""; Click.ZIndex=26
-
 		Click.MouseEnter:Connect(function() Hover.BackgroundTransparency=0.96 end)
 		Click.MouseLeave:Connect(function() Hover.BackgroundTransparency=1 end)
-
 		Click.MouseButton1Click:Connect(function()
 			enabled=not enabled
 			Track.BackgroundColor3=enabled and C.ToggleOn or C.ToggleOff
 			Knob.Position=enabled and UDim2.new(1,-14,0.5,-6) or UDim2.new(0,2,0.5,-6)
 			cb(enabled)
 		end)
-
 		local function SetState(val)
 			enabled=val
 			Track.BackgroundColor3=val and C.ToggleOn or C.ToggleOff
@@ -961,46 +1056,37 @@ local function CreateGUI()
 		return Row, SetState
 	end
 
-	-- Slider: тонкий, без лишнего
 	local function Slider(parent, text, min, max, default, cb)
 		local Frame=Instance.new("Frame",parent)
 		Frame.Size=UDim2.new(1,0,0,50); Frame.BackgroundColor3=C.Row
 		Frame.BorderSizePixel=0; Frame.ZIndex=23
 		Instance.new("UICorner",Frame).CornerRadius=UDim.new(0,4)
-
 		local SlLbl=Instance.new("TextLabel",Frame)
 		SlLbl.Size=UDim2.new(0.7,0,0,22); SlLbl.Position=UDim2.new(0,10,0,6)
 		SlLbl.BackgroundTransparency=1; SlLbl.Text=text; SlLbl.TextColor3=C.Text
 		SlLbl.Font=Enum.Font.GothamSemibold; SlLbl.TextSize=12
 		SlLbl.TextXAlignment=Enum.TextXAlignment.Left; SlLbl.ZIndex=24
-
 		local ValLbl=Instance.new("TextLabel",Frame)
 		ValLbl.Size=UDim2.new(0.28,0,0,22); ValLbl.Position=UDim2.new(0.72,0,0,6)
 		ValLbl.BackgroundTransparency=1; ValLbl.Text=tostring(default)
 		ValLbl.TextColor3=C.Accent; ValLbl.Font=Enum.Font.GothamBold; ValLbl.TextSize=12
 		ValLbl.TextXAlignment=Enum.TextXAlignment.Right; ValLbl.ZIndex=24
-
 		local BarBG=Instance.new("Frame",Frame)
 		BarBG.Size=UDim2.new(1,-20,0,4); BarBG.Position=UDim2.new(0,10,0,36)
 		BarBG.BackgroundColor3=C.SliderBG; BarBG.BorderSizePixel=0; BarBG.ZIndex=24
 		Instance.new("UICorner",BarBG).CornerRadius=UDim.new(1,0)
-
 		local Fill=Instance.new("Frame",BarBG)
 		Fill.Size=UDim2.new((default-min)/(max-min),0,1,0)
 		Fill.BackgroundColor3=C.SliderFill; Fill.BorderSizePixel=0; Fill.ZIndex=25
 		Instance.new("UICorner",Fill).CornerRadius=UDim.new(1,0)
-
-		-- Ползунок (точка на конце)
 		local Handle=Instance.new("Frame",Fill)
 		Handle.Size=UDim2.new(0,8,0,8); Handle.Position=UDim2.new(1,-4,0.5,-4)
 		Handle.BackgroundColor3=Color3.new(1,1,1); Handle.BorderSizePixel=0; Handle.ZIndex=26
 		Instance.new("UICorner",Handle).CornerRadius=UDim.new(1,0)
-
 		local Btn=Instance.new("TextButton",BarBG)
 		Btn.Size=UDim2.new(1,0,0,20); Btn.Position=UDim2.new(0,0,-1.5,0)
 		Btn.BackgroundTransparency=1; Btn.Text=""; Btn.ZIndex=27
 		local dragging=false
-
 		local function Update(x)
 			local rel=math.max(0,math.min(1,(x-BarBG.AbsolutePosition.X)/BarBG.AbsoluteSize.X))
 			local v=math.floor(min+(max-min)*rel+0.5)
@@ -1023,14 +1109,12 @@ local function CreateGUI()
 		return Frame, SetValue
 	end
 
-	-- Button: строгий, без скруглений по-лишнему
 	local function Button(parent, text, color, cb)
 		local Btn=Instance.new("TextButton",parent)
 		Btn.Size=UDim2.new(1,0,0,32); Btn.BackgroundColor3=color or C.Accent
 		Btn.BorderSizePixel=0; Btn.Text=text; Btn.TextColor3=Color3.new(1,1,1)
 		Btn.Font=Enum.Font.GothamBold; Btn.TextSize=12; Btn.ZIndex=23
 		Instance.new("UICorner",Btn).CornerRadius=UDim.new(0,4)
-
 		Btn.MouseEnter:Connect(function()
 			Btn.BackgroundColor3=Color3.new(
 				math.min((color or C.Accent).R+0.06,1),
@@ -1043,19 +1127,16 @@ local function CreateGUI()
 		return Btn
 	end
 
-	-- TextInput
 	local function TextInput(parent, labelText, placeholder)
 		local Wrap=Instance.new("Frame",parent)
 		Wrap.Size=UDim2.new(1,0,0,54); Wrap.BackgroundColor3=C.Row
 		Wrap.BorderSizePixel=0; Wrap.ZIndex=23
 		Instance.new("UICorner",Wrap).CornerRadius=UDim.new(0,4)
-
 		local Lbl=Instance.new("TextLabel",Wrap)
 		Lbl.Size=UDim2.new(1,-10,0,20); Lbl.Position=UDim2.new(0,10,0,4)
 		Lbl.BackgroundTransparency=1; Lbl.Text=labelText; Lbl.TextColor3=C.Dim
 		Lbl.Font=Enum.Font.GothamSemibold; Lbl.TextSize=10
 		Lbl.TextXAlignment=Enum.TextXAlignment.Left; Lbl.ZIndex=24
-
 		local Input=Instance.new("TextBox",Wrap)
 		Input.Size=UDim2.new(1,-20,0,22); Input.Position=UDim2.new(0,10,0,26)
 		Input.BackgroundColor3=C.SliderBG; Input.BorderSizePixel=0
@@ -1065,36 +1146,30 @@ local function CreateGUI()
 		Input.TextXAlignment=Enum.TextXAlignment.Left
 		Input.ClearTextOnFocus=false; Input.ZIndex=25
 		Instance.new("UICorner",Input).CornerRadius=UDim.new(0,3)
-
 		return Wrap, function() return Input.Text end, function(v) Input.Text=v end, Input
 	end
 
-	-- Dropdown
 	local function Dropdown(parent, text, options, default, cb)
 		local DF=Instance.new("Frame",parent)
 		DF.Size=UDim2.new(1,0,0,34); DF.BackgroundColor3=C.Row
 		DF.BorderSizePixel=0; DF.ZIndex=23; DF.ClipsDescendants=false
 		Instance.new("UICorner",DF).CornerRadius=UDim.new(0,4)
-
 		local DLbl=Instance.new("TextLabel",DF)
 		DLbl.Size=UDim2.new(0.55,0,1,0); DLbl.Position=UDim2.new(0,10,0,0)
 		DLbl.BackgroundTransparency=1; DLbl.Text=text; DLbl.TextColor3=C.Text
 		DLbl.Font=Enum.Font.GothamSemibold; DLbl.TextSize=12
 		DLbl.TextXAlignment=Enum.TextXAlignment.Left; DLbl.ZIndex=24
-
 		local DBtn=Instance.new("TextButton",DF)
 		DBtn.Size=UDim2.new(0,100,0,22); DBtn.Position=UDim2.new(1,-108,0.5,-11)
 		DBtn.BackgroundColor3=C.SliderBG; DBtn.BorderSizePixel=0
 		DBtn.Text=default.."  ▾"; DBtn.TextColor3=C.Accent
 		DBtn.Font=Enum.Font.GothamBold; DBtn.TextSize=11; DBtn.ZIndex=25
 		Instance.new("UICorner",DBtn).CornerRadius=UDim.new(0,3)
-
 		local DList=Instance.new("Frame",DF)
 		DList.Size=UDim2.new(0,100,0,#options*28); DList.Position=UDim2.new(1,-108,1,2)
 		DList.BackgroundColor3=C.Header; DList.BorderSizePixel=0; DList.Visible=false; DList.ZIndex=80
 		Instance.new("UICorner",DList).CornerRadius=UDim.new(0,4)
 		local dlSt=Instance.new("UIStroke",DList); dlSt.Color=C.Border; dlSt.Thickness=1
-
 		local function SetSelected(opt)
 			DBtn.Text=opt.."  ▾"; DList.Visible=false; cb(opt)
 		end
@@ -1114,9 +1189,7 @@ local function CreateGUI()
 		return DF, function(val) DBtn.Text=val.."  ▾" end
 	end
 
-	-- =====================================================================
 	-- ВКЛАДКИ
-	-- =====================================================================
 	local AimbotTab = CreateTab("AIMBOT",  Icons.aimbot,     1)
 	local ESPTab    = CreateTab("ESP",     Icons.esp,        2)
 	local MoveTab   = CreateTab("MOVEMENT",Icons.movement,   3)
@@ -1190,6 +1263,32 @@ local function CreateGUI()
 	Slider(MoveTab,"TP Time (sec)",0,3,Settings.Teleport.TeleportTime,function(v) Settings.Teleport.TeleportTime=v end)
 	Slider(MoveTab,"Distance Behind",3,10,Settings.Teleport.Distance,function(v) Settings.Teleport.Distance=v end)
 
+	-- ===== FAKE LAG =====
+	SectionLabel(MoveTab,"Fake Lag")
+	Toggle(MoveTab,"Enable Fake Lag",Settings.FakeLag.Enabled,function(v)
+		Settings.FakeLag.Enabled=v
+		if v then
+			StartFakeLag()
+			if Settings.FakeLag.ShowCube then CreateFakeLagCube() end
+		else
+			StopFakeLag()
+			DestroyFakeLagCube()
+		end
+	end)
+	Toggle(MoveTab,"Show Preview Cube",Settings.FakeLag.ShowCube,function(v)
+		Settings.FakeLag.ShowCube=v
+		if not v then
+			if fakeLagCube then pcall(function() fakeLagCube.Transparency=1 end) end
+		end
+	end)
+	Slider(MoveTab,"FL Distance",5,50,Settings.FakeLag.Distance,function(v)
+		Settings.FakeLag.Distance=v
+	end)
+	Slider(MoveTab,"FL Interval (ms)",50,500,math.floor(Settings.FakeLag.Interval*1000),function(v)
+		Settings.FakeLag.Interval=v/1000
+		if Settings.FakeLag.Enabled then StartFakeLag() end
+	end)
+
 	-- ===== VISUALS =====
 	SectionLabel(VisualsTab,"Lighting")
 	Slider(VisualsTab,"Brightness",0,10,Settings.Visuals.Brightness,function(v)
@@ -1251,7 +1350,6 @@ local function CreateGUI()
 	StatusFrame.Size=UDim2.new(1,0,0,28)
 	StatusFrame.BackgroundColor3=C.Row; StatusFrame.BorderSizePixel=0; StatusFrame.ZIndex=23
 	Instance.new("UICorner",StatusFrame).CornerRadius=UDim.new(0,4)
-
 	local StatusLabel=Instance.new("TextLabel",StatusFrame)
 	StatusLabel.Size=UDim2.new(1,-16,1,0); StatusLabel.Position=UDim2.new(0,8,0,0)
 	StatusLabel.BackgroundTransparency=1
@@ -1265,20 +1363,17 @@ local function CreateGUI()
 	end
 
 	SectionLabel(ConfigTab,"Saved Configs")
-
 	local cfgListFrame=Instance.new("Frame",ConfigTab)
 	cfgListFrame.Size=UDim2.new(1,0,0,140)
 	cfgListFrame.BackgroundColor3=C.Row; cfgListFrame.BorderSizePixel=0
 	cfgListFrame.ZIndex=23; cfgListFrame.ClipsDescendants=true
 	Instance.new("UICorner",cfgListFrame).CornerRadius=UDim.new(0,4)
-
 	local cfgScroll=Instance.new("ScrollingFrame",cfgListFrame)
 	cfgScroll.Size=UDim2.new(1,-4,1,-4); cfgScroll.Position=UDim2.new(0,2,0,2)
 	cfgScroll.BackgroundTransparency=1; cfgScroll.BorderSizePixel=0
 	cfgScroll.ScrollBarThickness=3; cfgScroll.ScrollBarImageColor3=C.Dimmer
 	cfgScroll.CanvasSize=UDim2.new(0,0,0,0)
 	cfgScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y; cfgScroll.ZIndex=24
-
 	local csLayout=Instance.new("UIListLayout",cfgScroll)
 	csLayout.Padding=UDim.new(0,1); csLayout.SortOrder=Enum.SortOrder.LayoutOrder
 	local csPad=Instance.new("UIPadding",cfgScroll)
@@ -1290,7 +1385,6 @@ local function CreateGUI()
 	local function RebuildCfgList()
 		for _,r in pairs(cfgRows) do if r and r.Parent then r:Destroy() end end
 		cfgRows={}; selectedConfig=nil
-
 		if not FS_AVAILABLE then
 			local e=Instance.new("TextLabel",cfgScroll)
 			e.Size=UDim2.new(1,0,0,26); e.BackgroundTransparency=1
@@ -1299,7 +1393,6 @@ local function CreateGUI()
 			e.TextXAlignment=Enum.TextXAlignment.Left; e.ZIndex=25
 			table.insert(cfgRows,e); return
 		end
-
 		local list,_ = ConfigSystem.List()
 		if #list==0 then
 			local e=Instance.new("TextLabel",cfgScroll)
@@ -1309,7 +1402,6 @@ local function CreateGUI()
 			e.TextXAlignment=Enum.TextXAlignment.Left; e.ZIndex=25
 			table.insert(cfgRows,e); return
 		end
-
 		for _,name in ipairs(list) do
 			local Row=Instance.new("TextButton",cfgScroll)
 			Row.Size=UDim2.new(1,0,0,26)
@@ -1317,7 +1409,6 @@ local function CreateGUI()
 			Row.Text="  "..name; Row.TextColor3=C.Text
 			Row.Font=Enum.Font.GothamSemibold; Row.TextSize=12
 			Row.TextXAlignment=Enum.TextXAlignment.Left; Row.ZIndex=25
-
 			Row.MouseEnter:Connect(function()
 				if selectedConfig~=name then Row.BackgroundTransparency=0.85; Row.BackgroundColor3=C.AccentBG end
 			end)
@@ -1337,7 +1428,6 @@ local function CreateGUI()
 
 	SectionLabel(ConfigTab,"Config Name")
 	local _,GetCfgName,SetCfgName,cfgInput=TextInput(ConfigTab,"Name","Enter config name...")
-
 	SectionLabel(ConfigTab,"Actions")
 	Button(ConfigTab,"Save Config",C.Green,function()
 		local name=GetCfgName():match("^%s*(.-)%s*$")
@@ -1355,6 +1445,7 @@ local function CreateGUI()
 			SetStatus("Loaded: "..selectedConfig, C.Green)
 			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
 			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
 			ApplyLighting(); ApplySky()
 			if FOVCircle then
 				FOVCircle.Visible=Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV
@@ -1373,7 +1464,6 @@ local function CreateGUI()
 	Button(ConfigTab,"Refresh List",C.Orange,function()
 		RebuildCfgList(); SetStatus("Refreshed", C.Dim)
 	end)
-
 	SectionLabel(ConfigTab,"Export / Import")
 	local _,GetImportText,SetImportText,importInput=TextInput(ConfigTab,"Paste JSON to import","{ ... }")
 	Button(ConfigTab,"Export to Console",C.Purple,function()
@@ -1389,22 +1479,22 @@ local function CreateGUI()
 			SetStatus("Imported", C.Green); SetImportText("")
 			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
 			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
 			ApplyLighting(); ApplySky()
 		else SetStatus("Import error: "..(msg or "?"), C.Red) end
 	end)
-
 	RebuildCfgList()
 
 	-- ===== INFO =====
 	SectionLabel(InfoTab,"About")
 	local IBox=Instance.new("Frame",InfoTab)
-	IBox.Size=UDim2.new(1,0,0,160); IBox.BackgroundColor3=C.Row
+	IBox.Size=UDim2.new(1,0,0,180); IBox.BackgroundColor3=C.Row
 	IBox.BorderSizePixel=0; IBox.ZIndex=23
 	Instance.new("UICorner",IBox).CornerRadius=UDim.new(0,4)
 	local IT=Instance.new("TextLabel",IBox)
 	IT.Size=UDim2.new(1,-20,1,-16); IT.Position=UDim2.new(0,10,0,8)
 	IT.BackgroundTransparency=1; IT.ZIndex=24
-	IT.Text="RageVoid  |  alpha v0.7\n\n[Insert]  toggle menu\n[L]  teleport to random\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
+	IT.Text="RageVoid  |  alpha v0.8\n\n[Insert]  toggle menu\n[L]  teleport to random\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
 	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=12
 	IT.TextXAlignment=Enum.TextXAlignment.Left; IT.TextYAlignment=Enum.TextYAlignment.Top
 	IT.TextWrapped=true
@@ -1419,13 +1509,15 @@ local function CreateGUI()
 	Button(SetTab,"Enable Everything",C.Green,function()
 		Settings.ESP.Enabled=true; Settings.Aimbot.Enabled=true
 		Settings.Movement.BunnyHop=true; Settings.AntiAim.Enabled=true
-		SetupBunnyHop(); StartAntiAim()
+		Settings.FakeLag.Enabled=true
+		SetupBunnyHop(); StartAntiAim(); StartFakeLag()
 		if FOVCircle then FOVCircle.Visible=true end
 	end)
 	Button(SetTab,"Disable Everything",C.Red,function()
 		Settings.ESP.Enabled=false; Settings.Aimbot.Enabled=false
 		Settings.Movement.BunnyHop=false; Settings.AntiAim.Enabled=false
-		ClearAllESP(); DisableBunnyHop(); StopAntiAim()
+		Settings.FakeLag.Enabled=false
+		ClearAllESP(); DisableBunnyHop(); StopAntiAim(); StopFakeLag(); DestroyFakeLagCube()
 		if FOVCircle then FOVCircle.Visible=false end
 	end)
 	SectionLabel(SetTab,"Config Shortcuts")
@@ -1438,6 +1530,7 @@ local function CreateGUI()
 		if ok then
 			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
 			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
 			ApplyLighting(); ApplySky(); print("Loaded 'default'")
 		else print("Failed: "..tostring(msg)) end
 	end)
@@ -1478,6 +1571,7 @@ RunService.RenderStepped:Connect(function()
 		local t=GetClosestEnemy(); if t then AimAt(t) end
 	end
 	UpdateESP()
+	UpdateFakeLagCube()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
@@ -1489,6 +1583,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 	antiAimAngle=0
 	if Settings.Movement.BunnyHop then SetupBunnyHop() end
 	if Settings.AntiAim.Enabled then StartAntiAim() end
+	if Settings.FakeLag.Enabled then StartFakeLag() end
 end)
 
 Players.PlayerRemoving:Connect(function(p)
@@ -1505,5 +1600,6 @@ end
 
 if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
+if Settings.FakeLag.Enabled then StartFakeLag() end
 
-print("RageVoid v0.7 | Dark Minimal Redesign loaded")
+print("RageVoid v0.7 | Dark Minimal Redesign + FakeLag loaded")

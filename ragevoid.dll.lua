@@ -662,7 +662,7 @@ local function CreateFakeLagCube()
 	end
 	local cube = Instance.new("Part")
 	cube.Name           = "FakeLagPreview"
-	cube.Size           = Vector3.new(3, 3, 3)
+	cube.Size           = Vector3.new(1.5, 1.5, 1.5)
 	cube.Anchored       = true
 	cube.CanCollide     = false
 	cube.CanQuery       = false
@@ -675,7 +675,7 @@ local function CreateFakeLagCube()
 	local sel = Instance.new("SelectionBox")
 	sel.Adornee             = cube
 	sel.Color3              = Color3.fromRGB(130, 180, 255)
-	sel.LineThickness       = 0.04
+	sel.LineThickness       = 0.03
 	sel.SurfaceTransparency = 1
 	sel.SurfaceColor3       = Color3.fromRGB(130, 180, 255)
 	sel.Parent              = Workspace
@@ -787,21 +787,24 @@ local function StartFakeLag()
 	local lastTick = 0
 	fakeLagConnection = RunService.Heartbeat:Connect(function()
 		if not Settings.FakeLag.Enabled then return end
-		local now = tick()
-		if now - lastTick < Settings.FakeLag.Interval then return end
 
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local hum  = char and char:FindFirstChild("Humanoid")
 		if not root or not hum or hum.Health <= 0 then return end
 
-		-- Только когда на земле
+		-- Только на земле
 		if not IsOnGround(char) then return end
 
-		-- Только когда реально идёт (MoveDirection имеет длину > 0)
-		if hum.MoveDirection.Magnitude < 0.1 then return end
+		-- Проверка реальной физической скорости (не MoveDirection)
+		local vel = root.AssemblyLinearVelocity
+		local horizSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
+		if horizSpeed < 1 then return end
 
+		local now = tick()
+		if now - lastTick < Settings.FakeLag.Interval then return end
 		lastTick = now
+
 		local target = GetFakeLagTarget(char)
 		if target then
 			root.CFrame = CFrame.new(target, target + root.CFrame.LookVector)
@@ -847,7 +850,7 @@ local function CreateGUI()
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
 	wmLbl.Size=UDim2.new(1,-16,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
 	wmLbl.BackgroundTransparency=1
-	wmLbl.Text="RAGEVOID · v0.7 · By cloudbound.dev"
+	wmLbl.Text="RAGEVOID · v0.8 · By cloudbound.dev"
 	wmLbl.TextColor3=C.Text; wmLbl.Font=Enum.Font.GothamBold
 	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
@@ -1608,5 +1611,4 @@ if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
-print("RageVoid v0.7 | Dark Minimal Redesign + FakeLag loaded")
-
+print("RageVoid v0.8 | Dark Minimal Redesign + FakeLag loaded")

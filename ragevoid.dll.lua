@@ -789,13 +789,19 @@ local function StartFakeLag()
 		if not Settings.FakeLag.Enabled then return end
 		local now = tick()
 		if now - lastTick < Settings.FakeLag.Interval then return end
-		lastTick = now
+
 		local char = LocalPlayer.Character
 		local root = char and char:FindFirstChild("HumanoidRootPart")
 		local hum  = char and char:FindFirstChild("Humanoid")
 		if not root or not hum or hum.Health <= 0 then return end
-		-- Не телепортируем в воздухе
+
+		-- Только когда на земле
 		if not IsOnGround(char) then return end
+
+		-- Только когда реально идёт (MoveDirection имеет длину > 0)
+		if hum.MoveDirection.Magnitude < 0.1 then return end
+
+		lastTick = now
 		local target = GetFakeLagTarget(char)
 		if target then
 			root.CFrame = CFrame.new(target, target + root.CFrame.LookVector)
@@ -1603,3 +1609,4 @@ if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
 print("RageVoid v0.7 | Dark Minimal Redesign + FakeLag loaded")
+

@@ -1,5 +1,3 @@
--- RageVoid GUI Script | alpha v0.9 — REDESIGN (Dark Minimal / ESP-Client Style)
--- Insert = menu | Custom Keybinds
 local Players         = game:GetService("Players")
 local LocalPlayer     = Players.LocalPlayer
 local RunService      = game:GetService("RunService")
@@ -855,8 +853,8 @@ local function CreateGUI()
 
 	-- WATERMARK
 	WatermarkFrame=Instance.new("Frame",ScreenGui)
-	WatermarkFrame.Size=UDim2.new(0,230,0,22)
-	WatermarkFrame.Position=UDim2.new(0,8,0,60)
+	WatermarkFrame.Size=UDim2.new(0,370,0,28)
+	WatermarkFrame.Position=UDim2.new(0,8,0,65)
 	WatermarkFrame.BackgroundColor3=C.Header
 	WatermarkFrame.BorderSizePixel=0
 	WatermarkFrame.ZIndex=100
@@ -864,17 +862,54 @@ local function CreateGUI()
 	Instance.new("UICorner",WatermarkFrame).CornerRadius=UDim.new(0,4)
 	local wmStroke=Instance.new("UIStroke",WatermarkFrame)
 	wmStroke.Color=C.Border; wmStroke.Thickness=1; wmStroke.Transparency=0
+
 	local wmAccent=Instance.new("Frame",WatermarkFrame)
 	wmAccent.Size=UDim2.new(0,2,1,-4); wmAccent.Position=UDim2.new(0,4,0,2)
 	wmAccent.BackgroundColor3=C.Accent; wmAccent.BorderSizePixel=0
 	Instance.new("UICorner",wmAccent).CornerRadius=UDim.new(1,0)
+
+	-- Название слева
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
-	wmLbl.Size=UDim2.new(1,-16,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
+	wmLbl.Size=UDim2.new(0,190,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
 	wmLbl.BackgroundTransparency=1
-	wmLbl.Text="RAGEVOID · v0.9 · By cloudbound.dev"
+	wmLbl.Text="RAGEVOID  ·  alpha v0.9.1  ·  cloudbound.dev"
 	wmLbl.TextColor3=C.Text; wmLbl.Font=Enum.Font.GothamBold
-	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
+	wmLbl.TextSize=12; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
+
+	-- Время посередине
+	local wmTime=Instance.new("TextLabel",WatermarkFrame)
+	wmTime.Size=UDim2.new(0,155,1,0); wmTime.Position=UDim2.new(0,210,0,0)
+	wmTime.BackgroundTransparency=1
+	wmTime.Text="--:--:--"
+	wmTime.TextColor3=C.Dim; wmTime.Font=Enum.Font.GothamBold
+	wmTime.TextSize=12; wmTime.TextXAlignment=Enum.TextXAlignment.Center
+	wmTime.ZIndex=101
+
+	-- FPS справа
+	local wmFPS=Instance.new("TextLabel",WatermarkFrame)
+	wmFPS.Size=UDim2.new(0,72,1,0); wmFPS.Position=UDim2.new(1,-76,0,0)
+	wmFPS.BackgroundTransparency=1
+	wmFPS.Text="-- fps"
+	wmFPS.TextColor3=C.Green; wmFPS.Font=Enum.Font.GothamBold
+	wmFPS.TextSize=12; wmFPS.TextXAlignment=Enum.TextXAlignment.Right
+	wmFPS.ZIndex=102
+
+	local wmFrames, wmLastTick = 0, tick()
+	RunService.RenderStepped:Connect(function()
+		wmFrames = wmFrames + 1
+		local now = tick()
+		if now - wmLastTick >= 0.5 then
+			local fps = math.floor(wmFrames / (now - wmLastTick))
+			wmFrames = 0; wmLastTick = now
+			wmFPS.Text = fps.." fps"
+			wmFPS.TextColor3 = fps>=60 and C.Green or (fps>=30 and C.Orange or C.Red)
+		end
+		local h=math.floor(os.time()/3600)%24
+		local m=math.floor(os.time()/60)%60
+		local s=os.time()%60
+		wmTime.Text=string.format("%02d:%02d:%02d",h,m,s)
+	end)
 
 	-- KEYBINDS
 	local KBFrame=Instance.new("Frame",ScreenGui)
@@ -925,14 +960,55 @@ local function CreateGUI()
 		descLbl.TextXAlignment=Enum.TextXAlignment.Left; descLbl.ZIndex=57
 	end
 
-	AddBind("INS","Toggle Menu",2)
-	AddBind("L","Quick Teleport",3)
+	-- Динамические строки KBFrame — привязаны к Settings.Keybinds
+	local kbDynLabels = {} -- { id -> TextLabel (key badge) }
 
-	-- Динамическое обновление KBFrame из Settings.Keybinds
+	local function AddDynBind(bindId, desc, order)
+		local row = Instance.new("Frame", KBFrame)
+		row.Size = UDim2.new(1,0,0,18)
+		row.BackgroundTransparency = 1; row.ZIndex = 56; row.LayoutOrder = order
+
+		local keyLbl = Instance.new("TextLabel", row)
+		keyLbl.Size = UDim2.new(0,54,1,0)
+		keyLbl.BackgroundColor3 = C.AccentBG; keyLbl.BorderSizePixel = 0
+		keyLbl.Text = Settings.Keybinds[bindId] or "None"
+		keyLbl.TextColor3 = C.Accent
+		keyLbl.Font = Enum.Font.GothamBold; keyLbl.TextSize = 8
+		keyLbl.ZIndex = 57
+		Instance.new("UICorner", keyLbl).CornerRadius = UDim.new(0,3)
+
+		local descLbl = Instance.new("TextLabel", row)
+		descLbl.Size = UDim2.new(1,-62,1,0); descLbl.Position = UDim2.new(0,58,0,0)
+		descLbl.BackgroundTransparency = 1
+		descLbl.Text = desc; descLbl.TextColor3 = C.Dim
+		descLbl.Font = Enum.Font.Gotham; descLbl.TextSize = 10
+		descLbl.TextXAlignment = Enum.TextXAlignment.Left; descLbl.ZIndex = 57
+
+		kbDynLabels[bindId] = keyLbl
+	end
+
+	AddDynBind("ToggleMenu",    "Toggle Menu",    2)
+	AddDynBind("QuickTP",       "Quick Teleport", 3)
+	AddDynBind("ToggleESP",     "Toggle ESP",     4)
+	AddDynBind("ToggleAimbot",  "Toggle Aimbot",  5)
+	AddDynBind("ToggleFakeLag", "Fake Lag",       6)
+	AddDynBind("ToggleBhop",    "BHop",           7)
+	AddDynBind("ToggleAntiAim", "Anti-Aim",       8)
+
+	-- Обновление KBFrame каждую секунду
+	local kbLastUpdate = 0
 	RunService.Heartbeat:Connect(function()
-		-- обновляем только раз в секунду через tick
+		local now = tick()
+		if now - kbLastUpdate < 1 then return end
+		kbLastUpdate = now
+		for bindId, lbl in pairs(kbDynLabels) do
+			local val = Settings.Keybinds[bindId] or "None"
+			lbl.Text = val
+			lbl.TextColor3 = (val == "None") and C.Dimmer or C.Accent
+			lbl.BackgroundColor3 = (val == "None") and C.Row or C.AccentBG
+		end
 	end)
-
+	
 	-- ГЛАВНОЕ ОКНО
 	local SW=120; local CW=370; local WH=480; local WW=SW+CW
 	local Window=Instance.new("Frame",ScreenGui)
@@ -958,7 +1034,7 @@ local function CreateGUI()
 	local titleLbl=Instance.new("TextLabel",TitleBar)
 	titleLbl.Size=UDim2.new(1,-SW,0,32); titleLbl.Position=UDim2.new(0,SW,0,0)
 	titleLbl.BackgroundTransparency=1
-	titleLbl.Text="RAGEVOID  ·  alpha v0.9"
+	titleLbl.Text="RageVoid.dll"
 	titleLbl.TextColor3=C.Text; titleLbl.Font=Enum.Font.GothamBold
 	titleLbl.TextSize=11; titleLbl.ZIndex=22
 	local titleDot=Instance.new("Frame",TitleBar)
@@ -1685,7 +1761,7 @@ local function CreateGUI()
 	local IT=Instance.new("TextLabel",IBox)
 	IT.Size=UDim2.new(1,-20,1,-16); IT.Position=UDim2.new(0,10,0,8)
 	IT.BackgroundTransparency=1; IT.ZIndex=24
-	IT.Text="RageVoid  |  alpha v0.9\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
+	IT.Text="RageVoid  |  alpha v0.9.1\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
 	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=12
 	IT.TextXAlignment=Enum.TextXAlignment.Left; IT.TextYAlignment=Enum.TextYAlignment.Top
 	IT.TextWrapped=true
@@ -1853,4 +1929,5 @@ if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
-print("RageVoid v0.9 | Dark Minimal Redesign + FakeLag + Custom Keybinds loaded")
+print("RageVoid v0.9.1")
+

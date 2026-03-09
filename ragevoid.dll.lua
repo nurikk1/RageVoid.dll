@@ -1,3 +1,5 @@
+-- RageVoid GUI Script | alpha v0.9 — REDESIGN (Dark Minimal / ESP-Client Style)
+-- Insert = menu | Custom Keybinds
 local Players         = game:GetService("Players")
 local LocalPlayer     = Players.LocalPlayer
 local RunService      = game:GetService("RunService")
@@ -6,6 +8,7 @@ local Workspace       = game:GetService("Workspace")
 local Camera          = Workspace.CurrentCamera
 local HttpService     = game:GetService("HttpService")
 local Lighting        = game:GetService("Lighting")
+local IS_MOBILE       = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 -- =====================================================================
 -- НАСТРОЙКИ
@@ -24,6 +27,18 @@ local DefaultSettings = {
 		ShowWeapon   = true,
 		MaxDistance  = 1000,
 		CornerLen    = 8,
+	},
+	Chams = {
+		Enabled        = false,
+		Players        = true,
+		NPCs           = false,
+		Wallcheck      = true,   -- разный цвет сквозь стену
+		PlayerR        = 255, PlayerG = 60,  PlayerB = 60,
+		PlayerWallR    = 255, PlayerWallG = 160, PlayerWallB = 0,
+		NPCR           = 60,  NPCG = 200,  NPCB = 255,
+		NPCWallR       = 60,  NPCWallG = 80,  NPCWallB = 200,
+		Transparency   = 0.5,
+		WallTransparency = 0.7,
 	},
 	Aimbot = {
 		Enabled = false, FOV = 200, Smoothness = 50,
@@ -56,7 +71,7 @@ local DefaultSettings = {
 		AmbientR = 0, AmbientG = 0, AmbientB = 0,
 		OutdoorR = 70, OutdoorG = 70, OutdoorB = 70,
 		FogEnabled = false, FogEnd = 1000,
-		SkyEnabled = false, SkyID = "",
+		SkyEnabled = false, SkyPreset = "Night",
 	}
 }
 
@@ -78,6 +93,8 @@ local antiAimConnection, antiAimAngle = nil, 0
 local visualSky = nil
 local fakeLagConnection = nil
 local fakeLagCube       = nil
+local chamsObjects      = {} -- { model -> { parts -> {orig highlight} } }
+local chamsHighlights   = {} -- { model -> Highlight }
 local keybindListening  = nil
 local keybindButtons    = {}
 
@@ -155,7 +172,7 @@ end
 
 function ConfigSystem.Serialize()
 	local data = {
-		ESP=DeepCopy(Settings.ESP), Aimbot=DeepCopy(Settings.Aimbot),
+		ESP=DeepCopy(Settings.ESP), Chams=DeepCopy(Settings.Chams), Aimbot=DeepCopy(Settings.Aimbot),
 		Teleport=DeepCopy(Settings.Teleport), Movement=DeepCopy(Settings.Movement),
 		AntiAim=DeepCopy(Settings.AntiAim), FakeLag=DeepCopy(Settings.FakeLag),
 		Keybinds=DeepCopy(Settings.Keybinds), Visuals=DeepCopy(Settings.Visuals),
@@ -257,16 +274,26 @@ end
 -- =====================================================================
 local function ApplySky()
 	local V = Settings.Visuals
-	if V.SkyEnabled and V.SkyID~="" then
-		local sky = Lighting:FindFirstChildOfClass("Sky") or Instance.new("Sky",Lighting)
-		visualSky = sky
-		local id = "rbxassetid://"..V.SkyID:gsub("%D","")
-		sky.SkyboxBk=id; sky.SkyboxDn=id; sky.SkyboxFt=id
-		sky.SkyboxLf=id; sky.SkyboxRt=id; sky.SkyboxUp=id
-	else
-		local sky = Lighting:FindFirstChildOfClass("Sky")
-		if sky then sky:Destroy() end; visualSky=nil
+	local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
+	if not atmo then atmo = Instance.new("Atmosphere", Lighting) end
+	if not V.SkyEnabled then
+		atmo.Density = 0.395; atmo.Offset = 0
+		atmo.Color = Color3.fromRGB(199,199,199)
+		atmo.Decay = Color3.fromRGB(106,127,153)
+		atmo.Glare = 0; atmo.Haze = 0
+		return
 	end
+	local presets = {
+		Night    = {density=0.8, offset=0.25, r=10,  g=10,  b=40,  dr=5,  dg=5,  db=20,  glare=0,   haze=2},
+		DeepNight= {density=1.0, offset=0.5,  r=3,   g=3,   b=15,  dr=1,  dg=1,  db=8,   glare=0,   haze=0},
+		Sunset   = {density=0.4, offset=0.1,  r=255, g=100, b=50,  dr=180,dg=60, db=20,  glare=0.3, haze=1},
+		Fog      = {density=0.9, offset=0,    r=180, g=180, b=180, dr=120,dg=120,db=120, glare=0,   haze=3},
+	}
+	local p = presets[V.SkyPreset] or presets.Night
+	atmo.Density = p.density; atmo.Offset = p.offset
+	atmo.Color   = Color3.fromRGB(p.r, p.g, p.b)
+	atmo.Decay   = Color3.fromRGB(p.dr, p.dg, p.db)
+	atmo.Glare   = p.glare; atmo.Haze = p.haze
 end
 
 local function ApplyLighting()
@@ -832,6 +859,129 @@ local function StartFakeLag()
 end
 
 -- =====================================================================
+-- CHAMS (Highlight-based)
+-- =====================================================================
+local function GetChamsColor(isPlayer, visible)
+	local CH = Settings.Chams
+	if isPlayer then
+		if visible or not CH.Wallcheck then
+			return Color3.fromRGB(CH.PlayerR, CH.PlayerG, CH.PlayerB), CH.Transparency
+		else
+			return Color3.fromRGB(CH.PlayerWallR, CH.PlayerWallG, CH.PlayerWallB), CH.WallTransparency
+		end
+	else
+		if visible or not CH.Wallcheck then
+			return Color3.fromRGB(CH.NPCR, CH.NPCG, CH.NPCB), CH.Transparency
+		else
+			return Color3.fromRGB(CH.NPCWallR, CH.NPCWallG, CH.NPCWallB), CH.WallTransparency
+		end
+	end
+end
+
+local function IsModelVisible(model)
+	local root = model:FindFirstChild("HumanoidRootPart")
+	if not root then return false end
+	local rp = RaycastParams.new()
+	rp.FilterDescendantsInstances = { model, LocalPlayer.Character }
+	rp.FilterType = Enum.RaycastFilterType.Exclude
+	rp.IgnoreWater = true
+	local res = Workspace:Raycast(Camera.CFrame.Position, root.Position - Camera.CFrame.Position, rp)
+	return res == nil
+end
+
+local function ApplyChamsToModel(model, isPlayer)
+	if chamsHighlights[model] then return end
+	local hl = Instance.new("SelectionBox")
+	hl.Adornee         = model
+	hl.LineThickness   = 0
+	hl.SurfaceTransparency = 0.5
+	hl.SurfaceColor3   = Color3.fromRGB(255, 60, 60)
+	hl.Parent          = model
+	chamsHighlights[model] = { hl = hl, isPlayer = isPlayer }
+end
+
+local function RemoveChamsFromModel(model)
+	local data = chamsHighlights[model]
+	if not data then return end
+	pcall(function() data.hl:Destroy() end)
+	chamsHighlights[model] = nil
+end
+
+local function ClearAllChams()
+	for model, _ in pairs(chamsHighlights) do
+		RemoveChamsFromModel(model)
+	end
+	chamsHighlights = {}
+end
+
+local chamsLastUpdate = 0
+local function UpdateChams()
+	if not Settings.Chams.Enabled then
+		ClearAllChams()
+		return
+	end
+
+	local now = tick()
+	local myChar = LocalPlayer.Character
+
+	-- Собираем цели
+	local targets = {}
+	if Settings.Chams.Players then
+		for _, p in ipairs(Players:GetPlayers()) do
+			if p ~= LocalPlayer and p.Character then
+				local hum = p.Character:FindFirstChild("Humanoid")
+				if hum and hum.Health > 0 then
+					table.insert(targets, { model = p.Character, isPlayer = true })
+				end
+			end
+		end
+	end
+	if Settings.Chams.NPCs then
+		for _, obj in ipairs(Workspace:GetDescendants()) do
+			if obj:IsA("Model") and obj ~= myChar
+				and not Players:GetPlayerFromCharacter(obj)
+				and obj:FindFirstChild("Humanoid")
+				and obj:FindFirstChild("HumanoidRootPart") then
+				local hum = obj:FindFirstChild("Humanoid")
+				if hum and hum.Health > 0 then
+					table.insert(targets, { model = obj, isPlayer = false })
+				end
+			end
+		end
+	end
+
+	-- Удаляем чамсы для тех кто исчез
+	local targetSet = {}
+	for _, t in ipairs(targets) do targetSet[t.model] = true end
+	for model, _ in pairs(chamsHighlights) do
+		if not targetSet[model] then RemoveChamsFromModel(model) end
+	end
+
+	-- Применяем/обновляем
+	for _, t in ipairs(targets) do
+		local model = t.model
+		local isPlayer = t.isPlayer
+		if not chamsHighlights[model] then
+			ApplyChamsToModel(model, isPlayer)
+		end
+		local data = chamsHighlights[model]
+		if data and data.hl and data.hl.Parent then
+			local visible = IsModelVisible(model)
+			local color, transp = GetChamsColor(isPlayer, visible)
+			data.hl.SurfaceColor3       = color
+			data.hl.SurfaceTransparency = transp
+			-- Цвет обводки (чуть темнее)
+			data.hl.Color3 = Color3.new(
+				math.max(0, color.R - 0.15),
+				math.max(0, color.G - 0.15),
+				math.max(0, color.B - 0.15)
+			)
+			data.hl.LineThickness = 0.06
+		end
+	end
+end
+
+-- =====================================================================
 -- GUI
 -- =====================================================================
 local function CreateGUI()
@@ -853,8 +1003,8 @@ local function CreateGUI()
 
 	-- WATERMARK
 	WatermarkFrame=Instance.new("Frame",ScreenGui)
-	WatermarkFrame.Size=UDim2.new(0,370,0,28)
-	WatermarkFrame.Position=UDim2.new(0,8,0,65)
+	WatermarkFrame.Size=UDim2.new(0,400,0,28)
+	WatermarkFrame.Position=UDim2.new(0,755,0,60)
 	WatermarkFrame.BackgroundColor3=C.Header
 	WatermarkFrame.BorderSizePixel=0
 	WatermarkFrame.ZIndex=100
@@ -863,36 +1013,51 @@ local function CreateGUI()
 	local wmStroke=Instance.new("UIStroke",WatermarkFrame)
 	wmStroke.Color=C.Border; wmStroke.Thickness=1; wmStroke.Transparency=0
 
-	local wmAccent=Instance.new("Frame",WatermarkFrame)
-	wmAccent.Size=UDim2.new(0,2,1,-4); wmAccent.Position=UDim2.new(0,4,0,2)
-	wmAccent.BackgroundColor3=C.Accent; wmAccent.BorderSizePixel=0
-	Instance.new("UICorner",wmAccent).CornerRadius=UDim.new(1,0)
+	-- Синяя полоска сверху
+	local wmTopBar=Instance.new("Frame",WatermarkFrame)
+	wmTopBar.Size=UDim2.new(1,0,0,2)
+	wmTopBar.Position=UDim2.new(0,0,0,0)
+	wmTopBar.BackgroundColor3=C.Accent
+	wmTopBar.BorderSizePixel=0; wmTopBar.ZIndex=103
+	Instance.new("UICorner",wmTopBar).CornerRadius=UDim.new(0,4)
+	local wmTopFix=Instance.new("Frame",wmTopBar)
+	wmTopFix.Size=UDim2.new(1,0,0.5,0); wmTopFix.Position=UDim2.new(0,0,0.5,0)
+	wmTopFix.BackgroundColor3=C.Accent; wmTopFix.BorderSizePixel=0; wmTopFix.ZIndex=103
 
 	-- Название слева
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
-	wmLbl.Size=UDim2.new(0,190,1,0); wmLbl.Position=UDim2.new(0,14,0,0)
+	wmLbl.Size=UDim2.new(0,180,1,0); wmLbl.Position=UDim2.new(0,10,0,0)
 	wmLbl.BackgroundTransparency=1
-	wmLbl.Text="RAGEVOID  ·  alpha v0.9.1  ·  cloudbound.dev"
+	wmLbl.Text="RAGEVOID  · alpha v0.9.2  ·  cloudbound.dev"
 	wmLbl.TextColor3=C.Text; wmLbl.Font=Enum.Font.GothamBold
-	wmLbl.TextSize=12; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
+	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
 
 	-- Время посередине
 	local wmTime=Instance.new("TextLabel",WatermarkFrame)
-	wmTime.Size=UDim2.new(0,155,1,0); wmTime.Position=UDim2.new(0,210,0,0)
+	wmTime.Size=UDim2.new(0,150,1,0); wmTime.Position=UDim2.new(0,200,0,0)
 	wmTime.BackgroundTransparency=1
 	wmTime.Text="--:--:--"
 	wmTime.TextColor3=C.Dim; wmTime.Font=Enum.Font.GothamBold
-	wmTime.TextSize=12; wmTime.TextXAlignment=Enum.TextXAlignment.Center
+	wmTime.TextSize=11; wmTime.TextXAlignment=Enum.TextXAlignment.Center
 	wmTime.ZIndex=101
+
+	-- Пинг
+	local wmPing=Instance.new("TextLabel",WatermarkFrame)
+	wmPing.Size=UDim2.new(0,100,1,0); wmPing.Position=UDim2.new(0,278,0,0)
+	wmPing.BackgroundTransparency=1
+	wmPing.Text="-- ms"
+	wmPing.TextColor3=C.Green; wmPing.Font=Enum.Font.GothamBold
+	wmPing.TextSize=11; wmPing.TextXAlignment=Enum.TextXAlignment.Center
+	wmPing.ZIndex=101
 
 	-- FPS справа
 	local wmFPS=Instance.new("TextLabel",WatermarkFrame)
-	wmFPS.Size=UDim2.new(0,72,1,0); wmFPS.Position=UDim2.new(1,-76,0,0)
+	wmFPS.Size=UDim2.new(0,70,1,0); wmFPS.Position=UDim2.new(1,-74,0,0)
 	wmFPS.BackgroundTransparency=1
 	wmFPS.Text="-- fps"
 	wmFPS.TextColor3=C.Green; wmFPS.Font=Enum.Font.GothamBold
-	wmFPS.TextSize=12; wmFPS.TextXAlignment=Enum.TextXAlignment.Right
+	wmFPS.TextSize=11; wmFPS.TextXAlignment=Enum.TextXAlignment.Right
 	wmFPS.ZIndex=102
 
 	local wmFrames, wmLastTick = 0, tick()
@@ -904,6 +1069,9 @@ local function CreateGUI()
 			wmFrames = 0; wmLastTick = now
 			wmFPS.Text = fps.." fps"
 			wmFPS.TextColor3 = fps>=60 and C.Green or (fps>=30 and C.Orange or C.Red)
+			local ping = math.floor(LocalPlayer:GetNetworkPing()*1000)
+			wmPing.Text = ping.." ms"
+			wmPing.TextColor3 = ping<80 and C.Green or (ping<150 and C.Orange or C.Red)
 		end
 		local h=math.floor(os.time()/3600)%24
 		local m=math.floor(os.time()/60)%60
@@ -911,109 +1079,181 @@ local function CreateGUI()
 		wmTime.Text=string.format("%02d:%02d:%02d",h,m,s)
 	end)
 
-	-- KEYBINDS
-	local KBFrame=Instance.new("Frame",ScreenGui)
-	KBFrame.Size=UDim2.new(0,160,0,0)
-	KBFrame.Position=UDim2.new(0,1500,0,500)
-	KBFrame.BackgroundColor3=C.Header
-	KBFrame.BackgroundTransparency=0
-	KBFrame.BorderSizePixel=0
-	KBFrame.ZIndex=55
-	KBFrame.AutomaticSize=Enum.AutomaticSize.Y
-	KBFrame.Active=true; KBFrame.Draggable=true
-	Instance.new("UICorner",KBFrame).CornerRadius=UDim.new(0,4)
-	local kbSt=Instance.new("UIStroke",KBFrame)
-	kbSt.Color=C.Border; kbSt.Thickness=1
-	local kbPad=Instance.new("UIPadding",KBFrame)
-	kbPad.PaddingLeft=UDim.new(0,8); kbPad.PaddingRight=UDim.new(0,8)
-	kbPad.PaddingTop=UDim.new(0,6); kbPad.PaddingBottom=UDim.new(0,6)
-	local kbLayout=Instance.new("UIListLayout",KBFrame)
-	kbLayout.Padding=UDim.new(0,3); kbLayout.SortOrder=Enum.SortOrder.LayoutOrder
-	local kbTitle=Instance.new("TextLabel",KBFrame)
-	kbTitle.Size=UDim2.new(1,0,0,16)
-	kbTitle.BackgroundTransparency=1
-	kbTitle.Text="KEYBINDS"
-	kbTitle.TextColor3=C.Dim; kbTitle.Font=Enum.Font.GothamBold
-	kbTitle.TextSize=9; kbTitle.TextXAlignment=Enum.TextXAlignment.Left
-	kbTitle.LayoutOrder=0
-	local kbDiv=Instance.new("Frame",KBFrame)
-	kbDiv.Size=UDim2.new(1,0,0,1)
-	kbDiv.BackgroundColor3=C.Border; kbDiv.BorderSizePixel=0
-	kbDiv.LayoutOrder=1
+	-- МОБИЛЬНАЯ ПОДДЕРЖКА
+	local isMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+	local VP = workspace.CurrentCamera.ViewportSize
 
-	local function AddBind(key, desc, order)
-		local row=Instance.new("Frame",KBFrame)
-		row.Size=UDim2.new(1,0,0,18)
-		row.BackgroundTransparency=1; row.ZIndex=56; row.LayoutOrder=order
-		local keyLbl=Instance.new("TextLabel",row)
-		keyLbl.Size=UDim2.new(0,36,1,0)
-		keyLbl.BackgroundColor3=C.AccentBG; keyLbl.BorderSizePixel=0
-		keyLbl.Text=key; keyLbl.TextColor3=C.Accent
-		keyLbl.Font=Enum.Font.GothamBold; keyLbl.TextSize=9
-		keyLbl.ZIndex=57
-		Instance.new("UICorner",keyLbl).CornerRadius=UDim.new(0,3)
-		local descLbl=Instance.new("TextLabel",row)
-		descLbl.Size=UDim2.new(1,-44,1,0); descLbl.Position=UDim2.new(0,42,0,0)
-		descLbl.BackgroundTransparency=1
-		descLbl.Text=desc; descLbl.TextColor3=C.Dim
-		descLbl.Font=Enum.Font.Gotham; descLbl.TextSize=10
-		descLbl.TextXAlignment=Enum.TextXAlignment.Left; descLbl.ZIndex=57
-	end
+	-- Кнопка открытия меню на телефоне
+	local MobileBtn = Instance.new("TextButton", ScreenGui)
+	MobileBtn.Size = UDim2.new(0,48,0,48)
+	MobileBtn.Position = UDim2.new(0,8,0,60)
+	MobileBtn.BackgroundColor3 = C.AccentBG
+	MobileBtn.BorderSizePixel = 0
+	MobileBtn.Text = "☰"
+	MobileBtn.TextColor3 = C.Accent
+	MobileBtn.Font = Enum.Font.GothamBold
+	MobileBtn.TextSize = 22
+	MobileBtn.ZIndex = 100
+	MobileBtn.Visible = isMobile
+	Instance.new("UICorner", MobileBtn).CornerRadius = UDim.new(0,10)
+	local mbSt = Instance.new("UIStroke", MobileBtn)
+	mbSt.Color = C.Border; mbSt.Thickness = 1
 
-	-- Динамические строки KBFrame — привязаны к Settings.Keybinds
-	local kbDynLabels = {} -- { id -> TextLabel (key badge) }
+	-- ПАНЕЛЬ БЫСТРЫХ КНОПОК (вместо KBFrame с кейбиндами)
+	local KBFrame = Instance.new("Frame", ScreenGui)
+	KBFrame.Size = UDim2.new(0, 150, 0, 0)
+	KBFrame.Position = UDim2.new(1, -160, 0, 80)
+	KBFrame.BackgroundColor3 = C.Header
+	KBFrame.BackgroundTransparency = 0
+	KBFrame.BorderSizePixel = 0
+	KBFrame.ZIndex = 55
+	KBFrame.AutomaticSize = Enum.AutomaticSize.Y
+	KBFrame.Active = true; KBFrame.Draggable = true
+	Instance.new("UICorner", KBFrame).CornerRadius = UDim.new(0,6)
+	local kbSt = Instance.new("UIStroke", KBFrame)
+	kbSt.Color = C.Border; kbSt.Thickness = 1
+	local kbPad = Instance.new("UIPadding", KBFrame)
+	kbPad.PaddingLeft = UDim.new(0,6); kbPad.PaddingRight = UDim.new(0,6)
+	kbPad.PaddingTop = UDim.new(0,6); kbPad.PaddingBottom = UDim.new(0,6)
+	local kbLayout = Instance.new("UIListLayout", KBFrame)
+	kbLayout.Padding = UDim.new(0,4); kbLayout.SortOrder = Enum.SortOrder.LayoutOrder
 
-	local function AddDynBind(bindId, desc, order)
-		local row = Instance.new("Frame", KBFrame)
-		row.Size = UDim2.new(1,0,0,18)
-		row.BackgroundTransparency = 1; row.ZIndex = 56; row.LayoutOrder = order
+	local kbTitle = Instance.new("TextLabel", KBFrame)
+	kbTitle.Size = UDim2.new(1,0,0,14)
+	kbTitle.BackgroundTransparency = 1
+	kbTitle.Text = IS_MOBILE and "QUICK ACTIONS" or "KEYBINDS"
+	kbTitle.TextColor3 = C.Dim; kbTitle.Font = Enum.Font.GothamBold
+	kbTitle.TextSize = 9; kbTitle.TextXAlignment = Enum.TextXAlignment.Center
+	kbTitle.LayoutOrder = 0
 
-		local keyLbl = Instance.new("TextLabel", row)
-		keyLbl.Size = UDim2.new(0,54,1,0)
-		keyLbl.BackgroundColor3 = C.AccentBG; keyLbl.BorderSizePixel = 0
-		keyLbl.Text = Settings.Keybinds[bindId] or "None"
-		keyLbl.TextColor3 = C.Accent
-		keyLbl.Font = Enum.Font.GothamBold; keyLbl.TextSize = 8
-		keyLbl.ZIndex = 57
-		Instance.new("UICorner", keyLbl).CornerRadius = UDim.new(0,3)
+	local kbDiv = Instance.new("Frame", KBFrame)
+	kbDiv.Size = UDim2.new(1,0,0,1)
+	kbDiv.BackgroundColor3 = C.Border; kbDiv.BorderSizePixel = 0
+	kbDiv.LayoutOrder = 1
 
-		local descLbl = Instance.new("TextLabel", row)
-		descLbl.Size = UDim2.new(1,-62,1,0); descLbl.Position = UDim2.new(0,58,0,0)
-		descLbl.BackgroundTransparency = 1
-		descLbl.Text = desc; descLbl.TextColor3 = C.Dim
-		descLbl.Font = Enum.Font.Gotham; descLbl.TextSize = 10
-		descLbl.TextXAlignment = Enum.TextXAlignment.Left; descLbl.ZIndex = 57
+	-- Состояния кнопок
+	local actionStates = {
+		ESP = false, Aimbot = false, FakeLag = false,
+		BHop = false, AntiAim = false,
+	}
+	local actionButtons = {}
 
-		kbDynLabels[bindId] = keyLbl
-	end
+	local ACTIONS = {
+		{ id="ESP",     label="ESP",      order=2 },
+		{ id="Aimbot",  label="Aimbot",   order=3 },
+		{ id="AntiAim", label="Anti-Aim", order=4 },
+		{ id="BHop",    label="BHop",     order=5 },
+		{ id="FakeLag", label="Fake Lag", order=6 },
+		{ id="QuickTP", label="Quick TP", order=7 },
+	}
 
-	AddDynBind("ToggleMenu",    "Toggle Menu",    2)
-	AddDynBind("QuickTP",       "Quick Teleport", 3)
-	AddDynBind("ToggleESP",     "Toggle ESP",     4)
-	AddDynBind("ToggleAimbot",  "Toggle Aimbot",  5)
-	AddDynBind("ToggleFakeLag", "Fake Lag",       6)
-	AddDynBind("ToggleBhop",    "BHop",           7)
-	AddDynBind("ToggleAntiAim", "Anti-Aim",       8)
-
-	-- Обновление KBFrame каждую секунду
-	local kbLastUpdate = 0
-	RunService.Heartbeat:Connect(function()
-		local now = tick()
-		if now - kbLastUpdate < 1 then return end
-		kbLastUpdate = now
-		for bindId, lbl in pairs(kbDynLabels) do
-			local val = Settings.Keybinds[bindId] or "None"
-			lbl.Text = val
-			lbl.TextColor3 = (val == "None") and C.Dimmer or C.Accent
-			lbl.BackgroundColor3 = (val == "None") and C.Row or C.AccentBG
+	local function UpdateActionBtn(id)
+		local btn = actionButtons[id]
+		if not btn then return end
+		if id == "QuickTP" then
+			btn.BackgroundColor3 = C.AccentDim
+			btn.TextColor3 = C.Text
+		elseif actionStates[id] then
+			btn.BackgroundColor3 = C.ToggleOn
+			btn.TextColor3 = C.Text
+		else
+			btn.BackgroundColor3 = C.Row
+			btn.TextColor3 = C.Dim
 		end
-	end)
-	
+	end
+
+	local function FireAction(id)
+		if id == "ESP" then
+			Settings.ESP.Enabled = not Settings.ESP.Enabled
+			actionStates.ESP = Settings.ESP.Enabled
+			if not Settings.ESP.Enabled then ClearAllESP() end
+		elseif id == "Aimbot" then
+			Settings.Aimbot.Enabled = not Settings.Aimbot.Enabled
+			actionStates.Aimbot = Settings.Aimbot.Enabled
+			if FOVCircle then FOVCircle.Visible = Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV end
+		elseif id == "AntiAim" then
+			Settings.AntiAim.Enabled = not Settings.AntiAim.Enabled
+			actionStates.AntiAim = Settings.AntiAim.Enabled
+			if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
+		elseif id == "BHop" then
+			Settings.Movement.BunnyHop = not Settings.Movement.BunnyHop
+			actionStates.BHop = Settings.Movement.BunnyHop
+			if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
+		elseif id == "FakeLag" then
+			Settings.FakeLag.Enabled = not Settings.FakeLag.Enabled
+			actionStates.FakeLag = Settings.FakeLag.Enabled
+			if Settings.FakeLag.Enabled then StartFakeLag() else StopFakeLag(); DestroyFakeLagCube() end
+		elseif id == "QuickTP" then
+			if isTeleporting then StopTeleport(); task.wait(0.2) end
+			TeleportToRandomPlayer()
+		end
+		UpdateActionBtn(id)
+	end
+
+	local kbDynLabels = {}
+
+	if IS_MOBILE then
+		-- На мобиле: кнопки быстрых действий
+		for _, act in ipairs(ACTIONS) do
+			local btn = Instance.new("TextButton", KBFrame)
+			btn.Size = UDim2.new(1,0,0,26)
+			btn.BackgroundColor3 = C.Row
+			btn.BorderSizePixel = 0
+			btn.Text = act.label
+			btn.TextColor3 = C.Dim
+			btn.Font = Enum.Font.GothamBold
+			btn.TextSize = 11
+			btn.ZIndex = 56
+			btn.LayoutOrder = act.order
+			Instance.new("UICorner", btn).CornerRadius = UDim.new(0,4)
+			actionButtons[act.id] = btn
+			UpdateActionBtn(act.id)
+			btn.MouseButton1Click:Connect(function() FireAction(act.id) end)
+		end
+	else
+		-- На ПК: строки с кейбиндами
+		KBFrame.Size = UDim2.new(0,180,0,0)
+		KBFrame.Position = UDim2.new(1,-190,0,80)
+		for _, kb in ipairs(KEYBIND_IDS) do
+			local row = Instance.new("Frame", KBFrame)
+			row.Size = UDim2.new(1,0,0,18)
+			row.BackgroundTransparency = 1
+			row.BorderSizePixel = 0
+			row.LayoutOrder = 10
+			local keyLbl = Instance.new("TextLabel", row)
+			keyLbl.Size = UDim2.new(0,55,1,0)
+			keyLbl.BackgroundColor3 = C.AccentBG
+			keyLbl.BorderSizePixel = 0
+			keyLbl.Text = Settings.Keybinds[kb.id] or "None"
+			keyLbl.TextColor3 = C.Accent
+			keyLbl.Font = Enum.Font.GothamBold
+			keyLbl.TextSize = 9
+			keyLbl.TextXAlignment = Enum.TextXAlignment.Center
+			Instance.new("UICorner", keyLbl).CornerRadius = UDim.new(0,3)
+			local nameLbl = Instance.new("TextLabel", row)
+			nameLbl.Size = UDim2.new(1,-60,1,0)
+			nameLbl.Position = UDim2.new(0,60,0,0)
+			nameLbl.BackgroundTransparency = 1
+			nameLbl.Text = kb.id
+			nameLbl.TextColor3 = C.Dim
+			nameLbl.Font = Enum.Font.Gotham
+			nameLbl.TextSize = 9
+			nameLbl.TextXAlignment = Enum.TextXAlignment.Left
+			kbDynLabels[kb.id] = keyLbl
+		end
+	end
+
 	-- ГЛАВНОЕ ОКНО
-	local SW=120; local CW=370; local WH=480; local WW=SW+CW
+	local SW,CW,WH
+	if IS_MOBILE then
+		SW=72; CW=222; WH=288
+	else
+		SW=120; CW=370; WH=480
+	end
+	local WW=SW+CW
 	local Window=Instance.new("Frame",ScreenGui)
 	Window.Name="Window"; Window.Size=UDim2.new(0,WW,0,WH)
-	Window.Position=UDim2.new(0.12,0,0.12,0)
+	Window.Position=UDim2.new(0.05,0,0.1,0)
 	Window.BackgroundColor3=C.BG; Window.BorderSizePixel=0
 	Window.Active=true; Window.Draggable=true
 	Window.Visible=false; Window.ZIndex=20
@@ -1021,42 +1261,67 @@ local function CreateGUI()
 	local winSt=Instance.new("UIStroke",Window)
 	winSt.Color=C.Border; winSt.Thickness=1
 
+	-- Мобильный drag (Touch)
+	do
+		local dragActive=false; local dragStartPos, dragStartOff
+		Window.InputBegan:Connect(function(inp)
+			if inp.UserInputType==Enum.UserInputType.Touch then
+				dragActive=true; dragStartPos=inp.Position; dragStartOff=Window.Position
+			end
+		end)
+		Window.InputEnded:Connect(function(inp)
+			if inp.UserInputType==Enum.UserInputType.Touch then dragActive=false end
+		end)
+		Window.InputChanged:Connect(function(inp)
+			if dragActive and inp.UserInputType==Enum.UserInputType.Touch then
+				local d=inp.Position-dragStartPos
+				Window.Position=UDim2.new(dragStartOff.X.Scale,dragStartOff.X.Offset+d.X,dragStartOff.Y.Scale,dragStartOff.Y.Offset+d.Y)
+			end
+		end)
+	end
+
+	-- Мобильная кнопка открытия меню
+	MobileBtn.MouseButton1Click:Connect(function()
+		Window.Visible = not Window.Visible
+	end)
+
 	local TitleBar=Instance.new("Frame",Window)
-	TitleBar.Size=UDim2.new(0,WW,0,32); TitleBar.Position=UDim2.new(0,0,0,0)
+	local TB_H = IS_MOBILE and 20 or 28
+	TitleBar.Size=UDim2.new(0,WW,0,TB_H); TitleBar.Position=UDim2.new(0,0,0,0)
 	TitleBar.BackgroundColor3=C.Header; TitleBar.BorderSizePixel=0; TitleBar.ZIndex=21
 	Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,6)
 	local tbFix=Instance.new("Frame",TitleBar)
 	tbFix.Size=UDim2.new(1,0,0,8); tbFix.Position=UDim2.new(0,0,1,-8)
 	tbFix.BackgroundColor3=C.Header; tbFix.BorderSizePixel=0; tbFix.ZIndex=21
 	local titleLine=Instance.new("Frame",Window)
-	titleLine.Size=UDim2.new(0,WW,0,1); titleLine.Position=UDim2.new(0,0,0,32)
+	titleLine.Size=UDim2.new(0,WW,0,1); titleLine.Position=UDim2.new(0,0,0,TB_H)
 	titleLine.BackgroundColor3=C.Border; titleLine.BorderSizePixel=0; titleLine.ZIndex=22
 	local titleLbl=Instance.new("TextLabel",TitleBar)
-	titleLbl.Size=UDim2.new(1,-SW,0,32); titleLbl.Position=UDim2.new(0,SW,0,0)
+	titleLbl.Size=UDim2.new(1,-SW,0,TB_H); titleLbl.Position=UDim2.new(0,SW,0,0)
 	titleLbl.BackgroundTransparency=1
-	titleLbl.Text="RageVoid.dll"
+	titleLbl.Text="RAGEVOID  ·  alpha v0.9"
 	titleLbl.TextColor3=C.Text; titleLbl.Font=Enum.Font.GothamBold
-	titleLbl.TextSize=11; titleLbl.ZIndex=22
+	titleLbl.TextSize= IS_MOBILE and 7 or 11; titleLbl.ZIndex=22
 	local titleDot=Instance.new("Frame",TitleBar)
-	titleDot.Size=UDim2.new(0,6,0,6); titleDot.Position=UDim2.new(0,SW+10,0.5,-3)
+	titleDot.Size=UDim2.new(0,4,0,4); titleDot.Position=UDim2.new(0,SW+6,0.5,-2)
 	titleDot.BackgroundColor3=C.Accent; titleDot.BorderSizePixel=0; titleDot.ZIndex=23
 	Instance.new("UICorner",titleDot).CornerRadius=UDim.new(1,0)
 
 	local Sidebar=Instance.new("Frame",Window)
-	Sidebar.Size=UDim2.new(0,SW,1,-33); Sidebar.Position=UDim2.new(0,0,0,33)
+	Sidebar.Size=UDim2.new(0,SW,1,-TB_H); Sidebar.Position=UDim2.new(0,0,0,TB_H)
 	Sidebar.BackgroundColor3=C.Sidebar; Sidebar.BorderSizePixel=0; Sidebar.ZIndex=21
 	local sideDiv=Instance.new("Frame",Window)
-	sideDiv.Size=UDim2.new(0,1,1,-33); sideDiv.Position=UDim2.new(0,SW,0,33)
+	sideDiv.Size=UDim2.new(0,1,1,-TB_H); sideDiv.Position=UDim2.new(0,SW,0,TB_H)
 	sideDiv.BackgroundColor3=C.Border; sideDiv.BorderSizePixel=0; sideDiv.ZIndex=22
 	local ContentPanel=Instance.new("Frame",Window)
-	ContentPanel.Size=UDim2.new(0,CW-1,1,-33); ContentPanel.Position=UDim2.new(0,SW+1,0,33)
+	ContentPanel.Size=UDim2.new(0,CW-1,1,-TB_H); ContentPanel.Position=UDim2.new(0,SW+1,0,TB_H)
 	ContentPanel.BackgroundColor3=C.Content; ContentPanel.BorderSizePixel=0; ContentPanel.ZIndex=21
 
 	-- TABS
 	local tabList={}
-	local TAB_H=40
-	local TAB_PAD=6
-	local TAB_ICON=18
+	local TAB_H   = IS_MOBILE and 24 or 36
+	local TAB_PAD = IS_MOBILE and 4  or 6
+	local TAB_ICON= IS_MOBILE and 11 or 16
 
 	local function CreateTab(name, iconId, order)
 		local TabBtn=Instance.new("TextButton",Sidebar)
@@ -1078,7 +1343,7 @@ local function CreateGUI()
 		Lbl.Position=UDim2.new(0,10+TAB_ICON+8,0,0)
 		Lbl.BackgroundTransparency=1; Lbl.Text=name:upper()
 		Lbl.TextColor3=C.Dimmer; Lbl.Font=Enum.Font.GothamSemibold
-		Lbl.TextSize=11; Lbl.TextXAlignment=Enum.TextXAlignment.Left; Lbl.ZIndex=23
+		Lbl.TextSize= IS_MOBILE and 7 or 10; Lbl.TextXAlignment=Enum.TextXAlignment.Left; Lbl.ZIndex=23
 		local Content=Instance.new("ScrollingFrame",ContentPanel)
 		Content.Size=UDim2.new(1,-10,1,-8); Content.Position=UDim2.new(0,5,0,4)
 		Content.BackgroundTransparency=1; Content.BorderSizePixel=0
@@ -1109,23 +1374,28 @@ local function CreateGUI()
 	end
 
 	-- UI HELPERS
+	local TS  = IS_MOBILE and 9  or 11  -- text size
+	local TSS = IS_MOBILE and 7  or 9   -- small text size
+	local RH  = IS_MOBILE and 22 or 28  -- row height
+	local BH  = IS_MOBILE and 22 or 26  -- button height
+	local SLH = IS_MOBILE and 14 or 18  -- section label height
 	local function SectionLabel(parent, text)
 		local Wrap=Instance.new("Frame",parent)
-		Wrap.Size=UDim2.new(1,0,0,22); Wrap.BackgroundTransparency=1; Wrap.ZIndex=23
+		Wrap.Size=UDim2.new(1,0,0,SLH); Wrap.BackgroundTransparency=1; Wrap.ZIndex=23
 		local line=Instance.new("Frame",Wrap)
 		line.Size=UDim2.new(1,0,0,1); line.Position=UDim2.new(0,0,1,-1)
 		line.BackgroundColor3=C.Border; line.BorderSizePixel=0; line.ZIndex=23
 		local lbl=Instance.new("TextLabel",Wrap)
-		lbl.Size=UDim2.new(1,0,0,18); lbl.Position=UDim2.new(0,0,0,0)
+		lbl.Size=UDim2.new(1,0,0,SLH-3); lbl.Position=UDim2.new(0,0,0,0)
 		lbl.BackgroundTransparency=1
 		lbl.Text=text:upper()
-		lbl.TextColor3=C.Dimmer; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=9
+		lbl.TextColor3=C.Dimmer; lbl.Font=Enum.Font.GothamBold; lbl.TextSize=TSS
 		lbl.TextXAlignment=Enum.TextXAlignment.Left; lbl.ZIndex=24
 	end
 
 	local function Toggle(parent, text, default, cb)
 		local Row=Instance.new("Frame",parent)
-		Row.Size=UDim2.new(1,0,0,34); Row.BackgroundColor3=C.Row
+		Row.Size=UDim2.new(1,0,0,RH); Row.BackgroundColor3=C.Row
 		Row.BorderSizePixel=0; Row.ZIndex=23
 		Instance.new("UICorner",Row).CornerRadius=UDim.new(0,4)
 		local Hover=Instance.new("Frame",Row)
@@ -1133,19 +1403,19 @@ local function CreateGUI()
 		Hover.BackgroundTransparency=1; Hover.BorderSizePixel=0; Hover.ZIndex=23
 		Instance.new("UICorner",Hover).CornerRadius=UDim.new(0,4)
 		local RowLbl=Instance.new("TextLabel",Row)
-		RowLbl.Size=UDim2.new(0.72,0,1,0); RowLbl.Position=UDim2.new(0,10,0,0)
+		RowLbl.Size=UDim2.new(0.72,0,1,0); RowLbl.Position=UDim2.new(0,7,0,0)
 		RowLbl.BackgroundTransparency=1; RowLbl.Text=text; RowLbl.TextColor3=C.Text
-		RowLbl.Font=Enum.Font.GothamSemibold; RowLbl.TextSize=12
+		RowLbl.Font=Enum.Font.GothamSemibold; RowLbl.TextSize=TS
 		RowLbl.TextXAlignment=Enum.TextXAlignment.Left; RowLbl.ZIndex=24
 		local Track=Instance.new("Frame",Row)
-		Track.Size=UDim2.new(0,34,0,18)
-		Track.Position=UDim2.new(1,-44,0.5,-9)
+		Track.Size=UDim2.new(0,26,0,14)
+		Track.Position=UDim2.new(1,-32,0.5,-7)
 		Track.BackgroundColor3=default and C.ToggleOn or C.ToggleOff
 		Track.BorderSizePixel=0; Track.ZIndex=24
 		Instance.new("UICorner",Track).CornerRadius=UDim.new(1,0)
 		local Knob=Instance.new("Frame",Track)
-		Knob.Size=UDim2.new(0,12,0,12)
-		Knob.Position=default and UDim2.new(1,-14,0.5,-6) or UDim2.new(0,2,0.5,-6)
+		Knob.Size=UDim2.new(0,9,0,9)
+		Knob.Position=default and UDim2.new(1,-11,0.5,-4.5) or UDim2.new(0,2,0.5,-4.5)
 		Knob.BackgroundColor3=Color3.new(1,1,1); Knob.BorderSizePixel=0; Knob.ZIndex=25
 		Instance.new("UICorner",Knob).CornerRadius=UDim.new(1,0)
 		local enabled=default
@@ -1156,34 +1426,34 @@ local function CreateGUI()
 		Click.MouseButton1Click:Connect(function()
 			enabled=not enabled
 			Track.BackgroundColor3=enabled and C.ToggleOn or C.ToggleOff
-			Knob.Position=enabled and UDim2.new(1,-14,0.5,-6) or UDim2.new(0,2,0.5,-6)
+			Knob.Position=enabled and UDim2.new(1,-11,0.5,-4.5) or UDim2.new(0,2,0.5,-4.5)
 			cb(enabled)
 		end)
 		local function SetState(val)
 			enabled=val
 			Track.BackgroundColor3=val and C.ToggleOn or C.ToggleOff
-			Knob.Position=val and UDim2.new(1,-14,0.5,-6) or UDim2.new(0,2,0.5,-6)
+			Knob.Position=val and UDim2.new(1,-11,0.5,-4.5) or UDim2.new(0,2,0.5,-4.5)
 		end
 		return Row, SetState
 	end
 
 	local function Slider(parent, text, min, max, default, cb)
 		local Frame=Instance.new("Frame",parent)
-		Frame.Size=UDim2.new(1,0,0,50); Frame.BackgroundColor3=C.Row
+		Frame.Size=UDim2.new(1,0,0,RH+12); Frame.BackgroundColor3=C.Row
 		Frame.BorderSizePixel=0; Frame.ZIndex=23
 		Instance.new("UICorner",Frame).CornerRadius=UDim.new(0,4)
 		local SlLbl=Instance.new("TextLabel",Frame)
-		SlLbl.Size=UDim2.new(0.7,0,0,22); SlLbl.Position=UDim2.new(0,10,0,6)
+		SlLbl.Size=UDim2.new(0.7,0,0,RH-4); SlLbl.Position=UDim2.new(0,7,0,4)
 		SlLbl.BackgroundTransparency=1; SlLbl.Text=text; SlLbl.TextColor3=C.Text
-		SlLbl.Font=Enum.Font.GothamSemibold; SlLbl.TextSize=12
+		SlLbl.Font=Enum.Font.GothamSemibold; SlLbl.TextSize=TS
 		SlLbl.TextXAlignment=Enum.TextXAlignment.Left; SlLbl.ZIndex=24
 		local ValLbl=Instance.new("TextLabel",Frame)
-		ValLbl.Size=UDim2.new(0.28,0,0,22); ValLbl.Position=UDim2.new(0.72,0,0,6)
+		ValLbl.Size=UDim2.new(0.28,0,0,RH-4); ValLbl.Position=UDim2.new(0.72,0,0,4)
 		ValLbl.BackgroundTransparency=1; ValLbl.Text=tostring(default)
-		ValLbl.TextColor3=C.Accent; ValLbl.Font=Enum.Font.GothamBold; ValLbl.TextSize=12
+		ValLbl.TextColor3=C.Accent; ValLbl.Font=Enum.Font.GothamBold; ValLbl.TextSize=TS
 		ValLbl.TextXAlignment=Enum.TextXAlignment.Right; ValLbl.ZIndex=24
 		local BarBG=Instance.new("Frame",Frame)
-		BarBG.Size=UDim2.new(1,-20,0,4); BarBG.Position=UDim2.new(0,10,0,36)
+		BarBG.Size=UDim2.new(1,-14,0,4); BarBG.Position=UDim2.new(0,7,0,24)
 		BarBG.BackgroundColor3=C.SliderBG; BarBG.BorderSizePixel=0; BarBG.ZIndex=24
 		Instance.new("UICorner",BarBG).CornerRadius=UDim.new(1,0)
 		local Fill=Instance.new("Frame",BarBG)
@@ -1191,11 +1461,11 @@ local function CreateGUI()
 		Fill.BackgroundColor3=C.SliderFill; Fill.BorderSizePixel=0; Fill.ZIndex=25
 		Instance.new("UICorner",Fill).CornerRadius=UDim.new(1,0)
 		local Handle=Instance.new("Frame",Fill)
-		Handle.Size=UDim2.new(0,8,0,8); Handle.Position=UDim2.new(1,-4,0.5,-4)
+		Handle.Size=UDim2.new(0,7,0,7); Handle.Position=UDim2.new(1,-3.5,0.5,-3.5)
 		Handle.BackgroundColor3=Color3.new(1,1,1); Handle.BorderSizePixel=0; Handle.ZIndex=26
 		Instance.new("UICorner",Handle).CornerRadius=UDim.new(1,0)
 		local Btn=Instance.new("TextButton",BarBG)
-		Btn.Size=UDim2.new(1,0,0,20); Btn.Position=UDim2.new(0,0,-1.5,0)
+		Btn.Size=UDim2.new(1,0,0,18); Btn.Position=UDim2.new(0,0,-1.5,0)
 		Btn.BackgroundTransparency=1; Btn.Text=""; Btn.ZIndex=27
 		local dragging=false
 		local function Update(x)
@@ -1210,11 +1480,13 @@ local function CreateGUI()
 			Fill.Size=UDim2.new((v-min)/(max-min),0,1,0); ValLbl.Text=tostring(v)
 		end
 		Btn.MouseButton1Down:Connect(function() dragging=true end)
+		Btn.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.Touch then dragging=true end end)
+		Btn.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
 		UserInputService.InputEnded:Connect(function(i)
 			if i.UserInputType==Enum.UserInputType.MouseButton1 then dragging=false end
 		end)
 		UserInputService.InputChanged:Connect(function(i)
-			if dragging and i.UserInputType==Enum.UserInputType.MouseMovement then Update(i.Position.X) end
+			if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then Update(i.Position.X) end
 		end)
 		Btn.MouseButton1Click:Connect(function() Update(UserInputService:GetMouseLocation().X) end)
 		return Frame, SetValue
@@ -1222,9 +1494,9 @@ local function CreateGUI()
 
 	local function Button(parent, text, color, cb)
 		local Btn=Instance.new("TextButton",parent)
-		Btn.Size=UDim2.new(1,0,0,32); Btn.BackgroundColor3=color or C.Accent
+		Btn.Size=UDim2.new(1,0,0,BH); Btn.BackgroundColor3=color or C.Accent
 		Btn.BorderSizePixel=0; Btn.Text=text; Btn.TextColor3=Color3.new(1,1,1)
-		Btn.Font=Enum.Font.GothamBold; Btn.TextSize=12; Btn.ZIndex=23
+		Btn.Font=Enum.Font.GothamBold; Btn.TextSize=TS; Btn.ZIndex=23
 		Instance.new("UICorner",Btn).CornerRadius=UDim.new(0,4)
 		Btn.MouseEnter:Connect(function()
 			Btn.BackgroundColor3=Color3.new(
@@ -1240,20 +1512,20 @@ local function CreateGUI()
 
 	local function TextInput(parent, labelText, placeholder)
 		local Wrap=Instance.new("Frame",parent)
-		Wrap.Size=UDim2.new(1,0,0,54); Wrap.BackgroundColor3=C.Row
+		Wrap.Size=UDim2.new(1,0,0,RH+16); Wrap.BackgroundColor3=C.Row
 		Wrap.BorderSizePixel=0; Wrap.ZIndex=23
 		Instance.new("UICorner",Wrap).CornerRadius=UDim.new(0,4)
 		local Lbl=Instance.new("TextLabel",Wrap)
-		Lbl.Size=UDim2.new(1,-10,0,20); Lbl.Position=UDim2.new(0,10,0,4)
+		Lbl.Size=UDim2.new(1,-10,0,RH-8); Lbl.Position=UDim2.new(0,7,0,3)
 		Lbl.BackgroundTransparency=1; Lbl.Text=labelText; Lbl.TextColor3=C.Dim
-		Lbl.Font=Enum.Font.GothamSemibold; Lbl.TextSize=10
+		Lbl.Font=Enum.Font.GothamSemibold; Lbl.TextSize=TSS
 		Lbl.TextXAlignment=Enum.TextXAlignment.Left; Lbl.ZIndex=24
 		local Input=Instance.new("TextBox",Wrap)
-		Input.Size=UDim2.new(1,-20,0,22); Input.Position=UDim2.new(0,10,0,26)
+		Input.Size=UDim2.new(1,-14,0,RH-6); Input.Position=UDim2.new(0,7,0,RH+2)
 		Input.BackgroundColor3=C.SliderBG; Input.BorderSizePixel=0
 		Input.Text=""; Input.PlaceholderText=placeholder
 		Input.TextColor3=C.Text; Input.PlaceholderColor3=C.Dimmer
-		Input.Font=Enum.Font.GothamSemibold; Input.TextSize=12
+		Input.Font=Enum.Font.GothamSemibold; Input.TextSize=TSS
 		Input.TextXAlignment=Enum.TextXAlignment.Left
 		Input.ClearTextOnFocus=false; Input.ZIndex=25
 		Instance.new("UICorner",Input).CornerRadius=UDim.new(0,3)
@@ -1262,22 +1534,22 @@ local function CreateGUI()
 
 	local function Dropdown(parent, text, options, default, cb)
 		local DF=Instance.new("Frame",parent)
-		DF.Size=UDim2.new(1,0,0,34); DF.BackgroundColor3=C.Row
+		DF.Size=UDim2.new(1,0,0,RH); DF.BackgroundColor3=C.Row
 		DF.BorderSizePixel=0; DF.ZIndex=23; DF.ClipsDescendants=false
 		Instance.new("UICorner",DF).CornerRadius=UDim.new(0,4)
 		local DLbl=Instance.new("TextLabel",DF)
-		DLbl.Size=UDim2.new(0.55,0,1,0); DLbl.Position=UDim2.new(0,10,0,0)
+		DLbl.Size=UDim2.new(0.5,0,1,0); DLbl.Position=UDim2.new(0,7,0,0)
 		DLbl.BackgroundTransparency=1; DLbl.Text=text; DLbl.TextColor3=C.Text
-		DLbl.Font=Enum.Font.GothamSemibold; DLbl.TextSize=12
+		DLbl.Font=Enum.Font.GothamSemibold; DLbl.TextSize=TS
 		DLbl.TextXAlignment=Enum.TextXAlignment.Left; DLbl.ZIndex=24
 		local DBtn=Instance.new("TextButton",DF)
-		DBtn.Size=UDim2.new(0,100,0,22); DBtn.Position=UDim2.new(1,-108,0.5,-11)
+		DBtn.Size=UDim2.new(0,90,0,RH-6); DBtn.Position=UDim2.new(1,-96,0.5,-(RH-6)/2)
 		DBtn.BackgroundColor3=C.SliderBG; DBtn.BorderSizePixel=0
 		DBtn.Text=default.."  ▾"; DBtn.TextColor3=C.Accent
-		DBtn.Font=Enum.Font.GothamBold; DBtn.TextSize=11; DBtn.ZIndex=25
+		DBtn.Font=Enum.Font.GothamBold; DBtn.TextSize=TS; DBtn.ZIndex=25
 		Instance.new("UICorner",DBtn).CornerRadius=UDim.new(0,3)
 		local DList=Instance.new("Frame",DF)
-		DList.Size=UDim2.new(0,100,0,#options*28); DList.Position=UDim2.new(1,-108,1,2)
+		DList.Size=UDim2.new(0,90,0,#options*(RH-2)); DList.Position=UDim2.new(1,-96,1,2)
 		DList.BackgroundColor3=C.Header; DList.BorderSizePixel=0; DList.Visible=false; DList.ZIndex=80
 		Instance.new("UICorner",DList).CornerRadius=UDim.new(0,4)
 		local dlSt=Instance.new("UIStroke",DList); dlSt.Color=C.Border; dlSt.Thickness=1
@@ -1286,16 +1558,16 @@ local function CreateGUI()
 		end
 		for i,opt in ipairs(options) do
 			local OBtn=Instance.new("TextButton",DList)
-			OBtn.Size=UDim2.new(1,0,0,26); OBtn.Position=UDim2.new(0,0,0,(i-1)*28)
+			OBtn.Size=UDim2.new(1,0,0,RH-2); OBtn.Position=UDim2.new(0,0,0,(i-1)*(RH-2))
 			OBtn.BackgroundTransparency=1; OBtn.Text=opt; OBtn.TextColor3=C.Text
-			OBtn.Font=Enum.Font.GothamSemibold; OBtn.TextSize=11; OBtn.ZIndex=81
+			OBtn.Font=Enum.Font.GothamSemibold; OBtn.TextSize=TS; OBtn.ZIndex=81
 			OBtn.MouseButton1Click:Connect(function() SetSelected(opt) end)
 			OBtn.MouseEnter:Connect(function() OBtn.TextColor3=C.Accent end)
 			OBtn.MouseLeave:Connect(function() OBtn.TextColor3=C.Text end)
 		end
 		DBtn.MouseButton1Click:Connect(function() DList.Visible=not DList.Visible end)
 		UserInputService.InputBegan:Connect(function(i)
-			if i.UserInputType==Enum.UserInputType.MouseButton1 then task.wait(); DList.Visible=false end
+			if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then task.wait(); DList.Visible=false end
 		end)
 		return DF, function(val) DBtn.Text=val.."  ▾" end
 	end
@@ -1306,9 +1578,8 @@ local function CreateGUI()
 	local MoveTab   = CreateTab("MOVEMENT",Icons.movement,   3)
 	local VisualsTab= CreateTab("VISUALS", Icons.visuals,    4)
 	local ConfigTab = CreateTab("CONFIG",  Icons.configlist, 5)
-	local BindsTab  = CreateTab("KEYBINDS",Icons.settings,   6)
-	local InfoTab   = CreateTab("INFO",    Icons.info,       7)
-	local SetTab    = CreateTab("SETTINGS",Icons.settings,   8)
+	local InfoTab   = CreateTab("INFO",    Icons.info,       6)
+	local SetTab    = CreateTab("SETTINGS",Icons.settings,   7)
 
 	-- ===== AIMBOT =====
 	SectionLabel(AimbotTab,"Aimbot")
@@ -1353,6 +1624,28 @@ local function CreateGUI()
 	SectionLabel(ESPTab,"Distance")
 	local _,setESPCornerLen      = Slider(ESPTab,"Corner Length",4,20,Settings.ESP.CornerLen,function(v) Settings.ESP.CornerLen=v end)
 	local _,setESPMaxDist        = Slider(ESPTab,"Max Distance",100,2000,Settings.ESP.MaxDistance,function(v) Settings.ESP.MaxDistance=v end)
+
+	SectionLabel(ESPTab,"Chams")
+	local _,setChamsEnabled      = Toggle(ESPTab,"Enable Chams",Settings.Chams.Enabled,function(v)
+		Settings.Chams.Enabled=v; if not v then ClearAllChams() end
+	end)
+	local _,setChamsPlayers      = Toggle(ESPTab,"Players",Settings.Chams.Players,function(v) Settings.Chams.Players=v end)
+	local _,setChamsNPCs         = Toggle(ESPTab,"NPCs",Settings.Chams.NPCs,function(v) Settings.Chams.NPCs=v end)
+	local _,setChamsWallcheck    = Toggle(ESPTab,"Wall Color Diff",Settings.Chams.Wallcheck,function(v) Settings.Chams.Wallcheck=v end)
+
+	SectionLabel(ESPTab,"Player Color")
+	local _,setChamsPR           = Slider(ESPTab,"R",0,255,Settings.Chams.PlayerR,function(v) Settings.Chams.PlayerR=v end)
+	local _,setChamsPG           = Slider(ESPTab,"G",0,255,Settings.Chams.PlayerG,function(v) Settings.Chams.PlayerG=v end)
+	local _,setChamsPB           = Slider(ESPTab,"B",0,255,Settings.Chams.PlayerB,function(v) Settings.Chams.PlayerB=v end)
+
+	SectionLabel(ESPTab,"Player Wall Color")
+	local _,setChamsPWR          = Slider(ESPTab,"R",0,255,Settings.Chams.PlayerWallR,function(v) Settings.Chams.PlayerWallR=v end)
+	local _,setChamsPWG          = Slider(ESPTab,"G",0,255,Settings.Chams.PlayerWallG,function(v) Settings.Chams.PlayerWallG=v end)
+	local _,setChamsPWB          = Slider(ESPTab,"B",0,255,Settings.Chams.PlayerWallB,function(v) Settings.Chams.PlayerWallB=v end)
+
+	SectionLabel(ESPTab,"Transparency")
+	local _,setChamsTransp       = Slider(ESPTab,"Visible Transp",0,95,math.floor(Settings.Chams.Transparency*100),function(v) Settings.Chams.Transparency=v/100 end)
+	local _,setChamsWallTransp   = Slider(ESPTab,"Wall Transp",0,95,math.floor(Settings.Chams.WallTransparency*100),function(v) Settings.Chams.WallTransparency=v/100 end)
 
 	-- ===== MOVEMENT =====
 	SectionLabel(MoveTab,"Movement")
@@ -1407,9 +1700,6 @@ local function CreateGUI()
 		Settings.Visuals.AmbientB=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
-	Dropdown(VisualsTab,"Time of Day",
-		{"00:00:00","04:00:00","08:00:00","12:00:00","14:00:00","18:00:00","20:00:00","23:00:00"},
-		"14:00:00",function(v) pcall(function() Lighting.TimeOfDay=v end) end)
 	SectionLabel(VisualsTab,"Fog")
 	local _,setVFog              = Toggle(VisualsTab,"Enable Fog",Settings.Visuals.FogEnabled,function(v)
 		Settings.Visuals.FogEnabled=v
@@ -1419,21 +1709,20 @@ local function CreateGUI()
 		Settings.Visuals.FogEnd=v
 		if Settings.Visuals.FogEnabled then pcall(function() Lighting.FogEnd=v end) end
 	end)
-	SectionLabel(VisualsTab,"Sky")
-	local _,setVSky              = Toggle(VisualsTab,"Enable Custom Sky",Settings.Visuals.SkyEnabled,function(v)
+	SectionLabel(VisualsTab,"Sky / Atmosphere")
+	local _,setVSky = Toggle(VisualsTab,"Enable",Settings.Visuals.SkyEnabled,function(v)
 		Settings.Visuals.SkyEnabled=v; ApplySky()
 	end)
-	local _,GetSkyID,SetSkyID,skyInput=TextInput(VisualsTab,"Sky Asset ID","e.g. 159451631")
-	skyInput.FocusLost:Connect(function()
-		Settings.Visuals.SkyID=skyInput.Text:gsub("%D","")
-		if Settings.Visuals.SkyEnabled then ApplySky() end
+	local _,setVSkyPreset = Dropdown(VisualsTab,"Preset",{"Night","DeepNight","Sunset","Fog"},
+		Settings.Visuals.SkyPreset or "Night",function(v)
+		Settings.Visuals.SkyPreset=v
+		Settings.Visuals.SkyEnabled=true; setVSky(true); ApplySky()
 	end)
-	Button(VisualsTab,"Apply Sky",C.Teal,function()
-		Settings.Visuals.SkyID=skyInput.Text:gsub("%D","")
-		Settings.Visuals.SkyEnabled=true; ApplySky()
+	Button(VisualsTab,"Apply",C.Teal,function()
+		Settings.Visuals.SkyEnabled=true; setVSky(true); ApplySky()
 	end)
-	Button(VisualsTab,"Remove Sky",C.Red,function()
-		Settings.Visuals.SkyEnabled=false; ApplySky()
+	Button(VisualsTab,"Remove",C.Red,function()
+		Settings.Visuals.SkyEnabled=false; setVSky(false); ApplySky()
 	end)
 	Button(VisualsTab,"Reset Lighting",C.Orange,function()
 		Settings.Visuals.Brightness=1
@@ -1442,7 +1731,7 @@ local function CreateGUI()
 		pcall(function()
 			Lighting.Brightness=1; Lighting.Ambient=Color3.fromRGB(0,0,0)
 			Lighting.OutdoorAmbient=Color3.fromRGB(70,70,70)
-			Lighting.TimeOfDay="14:00:00"; Lighting.FogEnd=100000; Lighting.FogStart=0
+			Lighting.FogEnd=100000; Lighting.FogStart=0
 		end)
 	end)
 
@@ -1468,6 +1757,16 @@ local function CreateGUI()
 		setAntiAimStatic(Settings.AntiAim.StaticAngle)
 		setAntiAimJitter(Settings.AntiAim.JitterRange)
 		setAntiAimInterval(math.floor(Settings.AntiAim.Interval*1000))
+		-- Chams
+		setChamsEnabled(Settings.Chams.Enabled)
+		setChamsPlayers(Settings.Chams.Players)
+		setChamsNPCs(Settings.Chams.NPCs)
+		setChamsWallcheck(Settings.Chams.Wallcheck)
+		setChamsPR(Settings.Chams.PlayerR); setChamsPG(Settings.Chams.PlayerG); setChamsPB(Settings.Chams.PlayerB)
+		setChamsPWR(Settings.Chams.PlayerWallR); setChamsPWG(Settings.Chams.PlayerWallG); setChamsPWB(Settings.Chams.PlayerWallB)
+		setChamsTransp(math.floor(Settings.Chams.Transparency*100))
+		setChamsWallTransp(math.floor(Settings.Chams.WallTransparency*100))
+		if not Settings.Chams.Enabled then ClearAllChams() end
 		-- ESP
 		setESPEnabled(Settings.ESP.Enabled)
 		setESPPlayers(Settings.ESP.ShowPlayers)
@@ -1501,8 +1800,8 @@ local function CreateGUI()
 		setVFog(Settings.Visuals.FogEnabled)
 		setVFogDist(Settings.Visuals.FogEnd)
 		setVSky(Settings.Visuals.SkyEnabled)
-		SetSkyID(Settings.Visuals.SkyID)
-		-- Keybinds
+		setVSkyPreset(Settings.Visuals.SkyPreset or "Night")
+		-- Keybinds (кнопки в таб + значки в KBFrame)
 		for _, bind in ipairs(KEYBIND_IDS) do
 			local val = Settings.Keybinds[bind.id] or "None"
 			local btn = keybindButtons[bind.id]
@@ -1511,9 +1810,22 @@ local function CreateGUI()
 				btn.TextColor3 = (val == "None") and C.Dimmer or C.Accent
 				btn.BackgroundColor3 = C.SliderBG
 			end
+			local lbl = kbDynLabels[bind.id]
+			if lbl then
+				lbl.Text = val
+				lbl.TextColor3 = (val == "None") and C.Dimmer or C.Accent
+				lbl.BackgroundColor3 = (val == "None") and C.Row or C.AccentBG
+			end
 		end
 		-- Watermark
 		WatermarkFrame.Visible = Settings.Watermark.Enabled
+		-- Sync action buttons
+		actionStates.ESP     = Settings.ESP.Enabled
+		actionStates.Aimbot  = Settings.Aimbot.Enabled
+		actionStates.AntiAim = Settings.AntiAim.Enabled
+		actionStates.BHop    = Settings.Movement.BunnyHop
+		actionStates.FakeLag = Settings.FakeLag.Enabled
+		for id,_ in pairs(actionStates) do UpdateActionBtn(id) end
 		-- Запуск/остановка систем
 		if Settings.AntiAim.Enabled then StartAntiAim() else StopAntiAim() end
 		if Settings.Movement.BunnyHop then SetupBunnyHop() else DisableBunnyHop() end
@@ -1524,7 +1836,7 @@ local function CreateGUI()
 
 	-- ===== CONFIG TAB =====
 	local StatusFrame=Instance.new("Frame",ConfigTab)
-	StatusFrame.Size=UDim2.new(1,0,0,28)
+	StatusFrame.Size=UDim2.new(1,0,0,18)
 	StatusFrame.BackgroundColor3=C.Row; StatusFrame.BorderSizePixel=0; StatusFrame.ZIndex=23
 	Instance.new("UICorner",StatusFrame).CornerRadius=UDim.new(0,4)
 	local StatusLabel=Instance.new("TextLabel",StatusFrame)
@@ -1532,7 +1844,7 @@ local function CreateGUI()
 	StatusLabel.BackgroundTransparency=1
 	StatusLabel.Text=FS_AVAILABLE and "Ready" or "File system unavailable"
 	StatusLabel.TextColor3=FS_AVAILABLE and C.Dim or C.Orange
-	StatusLabel.Font=Enum.Font.Gotham; StatusLabel.TextSize=11
+	StatusLabel.Font=Enum.Font.Gotham; StatusLabel.TextSize=7
 	StatusLabel.TextXAlignment=Enum.TextXAlignment.Left; StatusLabel.ZIndex=24
 
 	local function SetStatus(msg, col)
@@ -1541,7 +1853,7 @@ local function CreateGUI()
 
 	SectionLabel(ConfigTab,"Saved Configs")
 	local cfgListFrame=Instance.new("Frame",ConfigTab)
-	cfgListFrame.Size=UDim2.new(1,0,0,140)
+	cfgListFrame.Size=UDim2.new(1,0,0,90)
 	cfgListFrame.BackgroundColor3=C.Row; cfgListFrame.BorderSizePixel=0
 	cfgListFrame.ZIndex=23; cfgListFrame.ClipsDescendants=true
 	Instance.new("UICorner",cfgListFrame).CornerRadius=UDim.new(0,4)
@@ -1566,7 +1878,7 @@ local function CreateGUI()
 			local e=Instance.new("TextLabel",cfgScroll)
 			e.Size=UDim2.new(1,0,0,26); e.BackgroundTransparency=1
 			e.Text="  File system unavailable"; e.TextColor3=C.Red
-			e.Font=Enum.Font.Gotham; e.TextSize=11
+			e.Font=Enum.Font.Gotham; e.TextSize=7
 			e.TextXAlignment=Enum.TextXAlignment.Left; e.ZIndex=25
 			table.insert(cfgRows,e); return
 		end
@@ -1575,16 +1887,16 @@ local function CreateGUI()
 			local e=Instance.new("TextLabel",cfgScroll)
 			e.Size=UDim2.new(1,0,0,26); e.BackgroundTransparency=1
 			e.Text="  No configs saved yet"; e.TextColor3=C.Dimmer
-			e.Font=Enum.Font.Gotham; e.TextSize=11
+			e.Font=Enum.Font.Gotham; e.TextSize=7
 			e.TextXAlignment=Enum.TextXAlignment.Left; e.ZIndex=25
 			table.insert(cfgRows,e); return
 		end
 		for _,name in ipairs(list) do
 			local Row=Instance.new("TextButton",cfgScroll)
-			Row.Size=UDim2.new(1,0,0,26)
+			Row.Size=UDim2.new(1,0,0,16)
 			Row.BackgroundTransparency=1; Row.BorderSizePixel=0
 			Row.Text="  "..name; Row.TextColor3=C.Text
-			Row.Font=Enum.Font.GothamSemibold; Row.TextSize=12
+			Row.Font=Enum.Font.GothamSemibold; Row.TextSize=8
 			Row.TextXAlignment=Enum.TextXAlignment.Left; Row.ZIndex=25
 			Row.MouseEnter:Connect(function()
 				if selectedConfig~=name then Row.BackgroundTransparency=0.85; Row.BackgroundColor3=C.AccentBG end
@@ -1652,12 +1964,11 @@ local function CreateGUI()
 	end)
 	RebuildCfgList()
 
-	-- ===== KEYBINDS =====
-	SectionLabel(BindsTab, "Keybinds")
+	-- ===== KEYBINDS (в Config таб) =====
+	SectionLabel(ConfigTab, "Keybinds")
 
-	-- Подсказка
-	local BindHint = Instance.new("Frame", BindsTab)
-	BindHint.Size = UDim2.new(1,0,0,26)
+	local BindHint = Instance.new("Frame", ConfigTab)
+	BindHint.Size = UDim2.new(1,0,0,16)
 	BindHint.BackgroundColor3 = C.AccentBG
 	BindHint.BorderSizePixel = 0; BindHint.ZIndex = 23
 	Instance.new("UICorner", BindHint).CornerRadius = UDim.new(0,4)
@@ -1666,11 +1977,11 @@ local function CreateGUI()
 	BindHintLbl.BackgroundTransparency = 1
 	BindHintLbl.Text = "LMB = set key  ·  RMB = clear  ·  ESC = clear"
 	BindHintLbl.TextColor3 = C.Accent; BindHintLbl.Font = Enum.Font.Gotham
-	BindHintLbl.TextSize = 10; BindHintLbl.ZIndex = 24
+	BindHintLbl.TextSize = 7; BindHintLbl.ZIndex = 24
 
 	local function BuildBindRow(parent, bindId, bindLabel)
 		local Row = Instance.new("Frame", parent)
-		Row.Size = UDim2.new(1,0,0,36)
+		Row.Size = UDim2.new(1,0,0,RH)
 		Row.BackgroundColor3 = C.Row; Row.BorderSizePixel = 0; Row.ZIndex = 23
 		Instance.new("UICorner", Row).CornerRadius = UDim.new(0,4)
 
@@ -1678,18 +1989,18 @@ local function CreateGUI()
 		Lbl.Size = UDim2.new(0.55,0,1,0); Lbl.Position = UDim2.new(0,10,0,0)
 		Lbl.BackgroundTransparency = 1; Lbl.Text = bindLabel
 		Lbl.TextColor3 = C.Text; Lbl.Font = Enum.Font.GothamSemibold
-		Lbl.TextSize = 12; Lbl.TextXAlignment = Enum.TextXAlignment.Left; Lbl.ZIndex = 24
+		Lbl.TextSize = TS; Lbl.TextXAlignment = Enum.TextXAlignment.Left; Lbl.ZIndex = 24
 
 		local current = Settings.Keybinds[bindId]
 		local isNone = (current == "None" or current == "" or current == nil)
 
 		local KeyBtn = Instance.new("TextButton", Row)
-		KeyBtn.Size = UDim2.new(0,90,0,22); KeyBtn.Position = UDim2.new(1,-98,0.5,-11)
+		KeyBtn.Size = UDim2.new(0,72,0,RH-8); KeyBtn.Position = UDim2.new(1,-78,0.5,-(RH-8)/2)
 		KeyBtn.BackgroundColor3 = C.SliderBG; KeyBtn.BorderSizePixel = 0
 		KeyBtn.Text = current or "None"
 		KeyBtn.TextColor3 = isNone and C.Dimmer or C.Accent
 		KeyBtn.Font = Enum.Font.GothamBold
-		KeyBtn.TextSize = 11; KeyBtn.ZIndex = 25
+		KeyBtn.TextSize = TSS; KeyBtn.ZIndex = 25
 		Instance.new("UICorner", KeyBtn).CornerRadius = UDim.new(0,3)
 		local kbStroke = Instance.new("UIStroke", KeyBtn)
 		kbStroke.Color = C.AccentDim; kbStroke.Thickness = 1
@@ -1697,7 +2008,6 @@ local function CreateGUI()
 		keybindButtons[bindId] = KeyBtn
 
 		KeyBtn.MouseButton1Click:Connect(function()
-			-- Сброс предыдущей кнопки в режиме ожидания
 			if keybindListening and keybindListening ~= bindId then
 				local prev = keybindButtons[keybindListening]
 				if prev then
@@ -1715,7 +2025,6 @@ local function CreateGUI()
 			kbStroke.Color = C.Orange
 		end)
 
-		-- ПКМ = сбросить в None сразу
 		KeyBtn.MouseButton2Click:Connect(function()
 			if keybindListening == bindId then keybindListening = nil end
 			Settings.Keybinds[bindId] = "None"
@@ -1723,16 +2032,18 @@ local function CreateGUI()
 			KeyBtn.BackgroundColor3 = C.SliderBG
 			KeyBtn.TextColor3 = C.Dimmer
 			kbStroke.Color = C.AccentDim
+			local lbl = kbDynLabels[bindId]
+			if lbl then lbl.Text="None"; lbl.TextColor3=C.Dimmer; lbl.BackgroundColor3=C.Row end
 		end)
 
 		return Row
 	end
 
 	for _, bind in ipairs(KEYBIND_IDS) do
-		BuildBindRow(BindsTab, bind.id, bind.label)
+		BuildBindRow(ConfigTab, bind.id, bind.label)
 	end
 
-	Button(BindsTab, "Reset All to None", C.Red, function()
+	Button(ConfigTab, "Reset All to None", C.Red, function()
 		for _, bind in ipairs(KEYBIND_IDS) do
 			if bind.id ~= "ToggleMenu" then
 				Settings.Keybinds[bind.id] = "None"
@@ -1743,7 +2054,6 @@ local function CreateGUI()
 				end
 			end
 		end
-		-- ToggleMenu сбрасываем в Insert
 		Settings.Keybinds.ToggleMenu = "Insert"
 		if keybindButtons.ToggleMenu then
 			keybindButtons.ToggleMenu.Text = "Insert"
@@ -1755,14 +2065,14 @@ local function CreateGUI()
 	-- ===== INFO =====
 	SectionLabel(InfoTab,"About")
 	local IBox=Instance.new("Frame",InfoTab)
-	IBox.Size=UDim2.new(1,0,0,180); IBox.BackgroundColor3=C.Row
+	IBox.Size=UDim2.new(1,0,0,110); IBox.BackgroundColor3=C.Row
 	IBox.BorderSizePixel=0; IBox.ZIndex=23
 	Instance.new("UICorner",IBox).CornerRadius=UDim.new(0,4)
 	local IT=Instance.new("TextLabel",IBox)
 	IT.Size=UDim2.new(1,-20,1,-16); IT.Position=UDim2.new(0,10,0,8)
 	IT.BackgroundTransparency=1; IT.ZIndex=24
-	IT.Text="RageVoid  |  alpha v0.9.1\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
-	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=12
+	IT.Text="RageVoid  |  alpha v0.9\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
+	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=8
 	IT.TextXAlignment=Enum.TextXAlignment.Left; IT.TextYAlignment=Enum.TextYAlignment.Top
 	IT.TextWrapped=true
 
@@ -1771,20 +2081,20 @@ local function CreateGUI()
 	Toggle(SetTab,"Show Watermark",Settings.Watermark.Enabled,function(v)
 		Settings.Watermark.Enabled=v; WatermarkFrame.Visible=v
 	end)
-	Toggle(SetTab,"Show Keybinds",true,function(v) KBFrame.Visible=v end)
+	Toggle(SetTab,"Show Quick Actions",true,function(v) KBFrame.Visible=v end)
 	SectionLabel(SetTab,"Quick Actions")
 	Button(SetTab,"Enable Everything",C.Green,function()
 		Settings.ESP.Enabled=true; Settings.Aimbot.Enabled=true
 		Settings.Movement.BunnyHop=true; Settings.AntiAim.Enabled=true
-		Settings.FakeLag.Enabled=true
+		Settings.FakeLag.Enabled=true; Settings.Chams.Enabled=true
 		SetupBunnyHop(); StartAntiAim(); StartFakeLag()
 		if FOVCircle then FOVCircle.Visible=true end
 	end)
 	Button(SetTab,"Disable Everything",C.Red,function()
 		Settings.ESP.Enabled=false; Settings.Aimbot.Enabled=false
 		Settings.Movement.BunnyHop=false; Settings.AntiAim.Enabled=false
-		Settings.FakeLag.Enabled=false
-		ClearAllESP(); DisableBunnyHop(); StopAntiAim(); StopFakeLag(); DestroyFakeLagCube()
+		Settings.FakeLag.Enabled=false; Settings.Chams.Enabled=false
+		ClearAllESP(); DisableBunnyHop(); StopAntiAim(); StopFakeLag(); DestroyFakeLagCube(); ClearAllChams()
 		if FOVCircle then FOVCircle.Visible=false end
 	end)
 	SectionLabel(SetTab,"Config Shortcuts")
@@ -1824,6 +2134,8 @@ UserInputService.InputBegan:Connect(function(input, gp)
 					btn.BackgroundColor3 = C.SliderBG
 					btn.TextColor3 = C.Dimmer
 				end
+				local lbl = kbDynLabels[keybindListening]
+				if lbl then lbl.Text="None"; lbl.TextColor3=C.Dimmer; lbl.BackgroundColor3=C.Row end
 				keybindListening = nil
 				return
 			end
@@ -1835,6 +2147,8 @@ UserInputService.InputBegan:Connect(function(input, gp)
 					btn.BackgroundColor3 = C.SliderBG
 					btn.TextColor3 = C.Accent
 				end
+				local lbl = kbDynLabels[keybindListening]
+				if lbl then lbl.Text=keyName; lbl.TextColor3=C.Accent; lbl.BackgroundColor3=C.AccentBG end
 				keybindListening = nil
 				return
 			end
@@ -1899,6 +2213,7 @@ RunService.RenderStepped:Connect(function()
 	end
 	UpdateESP()
 	UpdateFakeLagCube()
+	UpdateChams()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
@@ -1929,5 +2244,4 @@ if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
-print("RageVoid v0.9.1")
-
+print("RageVoid v0.9 | Dark Minimal Redesign + FakeLag + Custom Keybinds loaded")

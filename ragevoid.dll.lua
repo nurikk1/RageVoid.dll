@@ -1004,7 +1004,7 @@ local function CreateGUI()
 	-- WATERMARK
 	WatermarkFrame=Instance.new("Frame",ScreenGui)
 	WatermarkFrame.Size=UDim2.new(0,400,0,28)
-	WatermarkFrame.Position=UDim2.new(0,755,0,75)
+	WatermarkFrame.Position=UDim2.new(0,755,0,90)
 	WatermarkFrame.BackgroundColor3=C.Header
 	WatermarkFrame.BorderSizePixel=0
 	WatermarkFrame.ZIndex=100
@@ -2245,4 +2245,5 @@ if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
 
 print("RageVoid v0.9 | Dark Minimal Redesign + FakeLag + Custom Keybinds loaded")
+
 

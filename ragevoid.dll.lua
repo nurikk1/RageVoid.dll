@@ -1,5 +1,3 @@
--- RageVoid GUI Script | alpha v0.9 — REDESIGN (Dark Minimal / ESP-Client Style)
--- Insert = menu | Custom Keybinds
 local Players         = game:GetService("Players")
 local LocalPlayer     = Players.LocalPlayer
 local RunService      = game:GetService("RunService")
@@ -10,9 +8,6 @@ local HttpService     = game:GetService("HttpService")
 local Lighting        = game:GetService("Lighting")
 local IS_MOBILE       = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
--- =====================================================================
--- НАСТРОЙКИ
--- =====================================================================
 local DefaultSettings = {
 	ESP = {
 		Enabled      = false,
@@ -32,13 +27,12 @@ local DefaultSettings = {
 		Enabled        = false,
 		Players        = true,
 		NPCs           = false,
-		Wallcheck      = true,   -- разный цвет сквозь стену
-		PlayerR        = 255, PlayerG = 60,  PlayerB = 60,
-		PlayerWallR    = 255, PlayerWallG = 160, PlayerWallB = 0,
-		NPCR           = 60,  NPCG = 200,  NPCB = 255,
-		NPCWallR       = 60,  NPCWallG = 80,  NPCWallB = 200,
-		Transparency   = 0.5,
-		WallTransparency = 0.7,
+		Wallcheck      = true,
+		PlayerR=255, PlayerG=60,  PlayerB=60,
+		PlayerWallR=255, PlayerWallG=160, PlayerWallB=0,
+		NPCR=60, NPCG=200, NPCB=255,
+		NPCWallR=60, NPCWallG=80, NPCWallB=200,
+		Transparency=0.5, WallTransparency=0.7,
 	},
 	Aimbot = {
 		Enabled = false, FOV = 200, Smoothness = 50,
@@ -72,7 +66,12 @@ local DefaultSettings = {
 		OutdoorR = 70, OutdoorG = 70, OutdoorB = 70,
 		FogEnabled = false, FogEnd = 1000,
 		SkyEnabled = false, SkyPreset = "Night",
-	}
+	},
+	SilentAim = {
+		Enabled = false,
+		FOV = 500,
+		TargetPart = "HumanoidRootPart",
+	},
 }
 
 local function DeepCopy(t)
@@ -82,9 +81,6 @@ local function DeepCopy(t)
 end
 local Settings = DeepCopy(DefaultSettings)
 
--- =====================================================================
--- ПЕРЕМЕННЫЕ
--- =====================================================================
 local FOVCircle, ScreenGui, WatermarkFrame
 local bhopConnection, lastJumpTime, jumpCooldown = nil, 0, 0.1
 local isTeleporting, currentTeleportTarget, teleportConnection = false, nil, nil
@@ -93,10 +89,10 @@ local antiAimConnection, antiAimAngle = nil, 0
 local visualSky = nil
 local fakeLagConnection = nil
 local fakeLagCube       = nil
-local chamsObjects      = {} -- { model -> { parts -> {orig highlight} } }
-local chamsHighlights   = {} -- { model -> Highlight }
 local keybindListening  = nil
 local keybindButtons    = {}
+local kbStrokes         = {} 
+local S = {}
 
 local KEYBIND_IDS = {
 	{ id="ToggleMenu",    label="Toggle Menu"    },
@@ -111,9 +107,6 @@ local KEYBIND_IDS = {
 local CONFIG_FOLDER = "RushvoidConfigs"
 local CONFIG_EXT    = ".json"
 
--- =====================================================================
--- ЦВЕТА — НОВАЯ ПАЛИТРА (Dark Minimal / ESP-Client)
--- =====================================================================
 local C = {
 	BG        = Color3.fromRGB(13, 13, 15),
 	Sidebar   = Color3.fromRGB(17, 17, 20),
@@ -149,11 +142,10 @@ local Icons = {
 	configlist= "rbxassetid://106913556469827",
 	info      = "rbxassetid://14446132837",
 	settings  = "rbxassetid://88492401190037",
+	guitab    = "rbxassetid://11401835952",
 }
 
--- =====================================================================
--- КОНФИГ
--- =====================================================================
+
 local ConfigSystem = {}
 local FS_AVAILABLE = (isfolder ~= nil and writefile ~= nil and readfile ~= nil)
 
@@ -176,6 +168,7 @@ function ConfigSystem.Serialize()
 		Teleport=DeepCopy(Settings.Teleport), Movement=DeepCopy(Settings.Movement),
 		AntiAim=DeepCopy(Settings.AntiAim), FakeLag=DeepCopy(Settings.FakeLag),
 		Keybinds=DeepCopy(Settings.Keybinds), Visuals=DeepCopy(Settings.Visuals),
+		SilentAim=DeepCopy(Settings.SilentAim),
 	}
 	local ok, result = SafeCall(function() return HttpService:JSONEncode(data) end)
 	if ok and type(result)=="string" then return result end
@@ -269,9 +262,7 @@ function ConfigSystem.Import(json)
 	return ConfigSystem.Deserialize(json)
 end
 
--- =====================================================================
--- VISUALS
--- =====================================================================
+
 local function ApplySky()
 	local V = Settings.Visuals
 	local atmo = Lighting:FindFirstChildOfClass("Atmosphere")
@@ -307,9 +298,7 @@ local function ApplyLighting()
 	end)
 end
 
--- =====================================================================
--- ESP (Drawing API)
--- =====================================================================
+
 local function HPColor(pct)
 	if pct > 0.6 then return Color3.fromRGB(50,220,80)
 	elseif pct > 0.3 then return Color3.fromRGB(240,190,30)
@@ -318,7 +307,8 @@ end
 
 local espObjects = {}
 
-local SKELETON_PAIRS = {
+
+local SKELETON_R15 = {
 	{"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
 	{"LowerTorso","LeftUpperLeg"},{"LowerTorso","RightUpperLeg"},
 	{"LeftUpperLeg","LeftLowerLeg"},{"RightUpperLeg","RightLowerLeg"},
@@ -328,14 +318,23 @@ local SKELETON_PAIRS = {
 	{"LeftLowerArm","LeftHand"},{"RightLowerArm","RightHand"},
 }
 
+local SKELETON_R6 = {
+	{"Head","Torso"},
+	{"Torso","Left Arm"},
+	{"Torso","Right Arm"},
+	{"Torso","Left Leg"},
+	{"Torso","Right Leg"},
+}
+local MAX_SKELETON_LINES = math.max(#SKELETON_R15, #SKELETON_R6)
+
 local function NewLine(color, thick)
 	local l=Drawing.new("Line"); l.Visible=false; l.Color=color or Color3.new(1,1,1)
 	l.Thickness=thick or 1; l.Transparency=1; return l
 end
 
-local function NewText(size, color, outline)
+local function NewText(size, color)
 	local t=Drawing.new("Text"); t.Visible=false; t.Size=size or 13
-	t.Color=color or Color3.new(1,1,1); t.Outline=outline~=false
+	t.Color=color or Color3.new(1,1,1); t.Outline=true
 	t.OutlineColor=Color3.new(0,0,0); t.Center=true; t.Font=Drawing.Fonts.UI; return t
 end
 
@@ -348,8 +347,8 @@ local function CreateESPDrawings(model, isPlayer)
 		nameText=NewText(13,Color3.new(1,1,1)), distText=NewText(11,Color3.fromRGB(180,180,180)),
 		weapText=NewText(11,Color3.fromRGB(255,210,80)), skeleton={},
 	}
-	for i=1,8 do table.insert(obj.corners,NewLine(clr,1.5)) end
-	for _=1,#SKELETON_PAIRS do table.insert(obj.skeleton,NewLine(Color3.fromRGB(255,255,255),0.8)) end
+	for i=1,8 do obj.corners[i]=NewLine(clr,1.5) end
+	for i=1,MAX_SKELETON_LINES do obj.skeleton[i]=NewLine(Color3.fromRGB(255,255,255),0.8) end
 	espObjects[model]=obj; return obj
 end
 
@@ -358,42 +357,26 @@ local function RemoveESPDrawings(model)
 	local function kill(d) pcall(function() d:Remove() end) end
 	kill(obj.tracer); kill(obj.hpBG); kill(obj.hpFill)
 	kill(obj.nameText); kill(obj.distText); kill(obj.weapText)
-	for _,l in ipairs(obj.corners) do kill(l) end
-	for _,l in ipairs(obj.skeleton) do kill(l) end
+	for i=1,#obj.corners do kill(obj.corners[i]) end
+	for i=1,#obj.skeleton do kill(obj.skeleton[i]) end
 	espObjects[model]=nil
 end
 
 local function ClearAllESP()
-	for model,_ in pairs(espObjects) do RemoveESPDrawings(model) end
+	for model in pairs(espObjects) do RemoveESPDrawings(model) end
 	espObjects={}
 end
 
-local function WorldToScreen(pos)
+local function W2S(pos)
 	local sp,vis=Camera:WorldToViewportPoint(pos)
 	if not vis or sp.Z<0 then return nil end
 	return Vector2.new(sp.X,sp.Y)
 end
 
-local function GetBoundingBox(root, head)
-	if not root or not head then return nil end
-	local sp1=WorldToScreen(head.Position+Vector3.new(0,head.Size.Y*0.5,0))
-	local sp2=WorldToScreen(root.Position-Vector3.new(0,2.8,0))
-	if not sp1 or not sp2 then return nil end
-	local top=math.min(sp1.Y,sp2.Y); local bottom=math.max(sp1.Y,sp2.Y)
-	local h=bottom-top; local w=h*0.55; local cx=(sp1.X+sp2.X)*0.5
-	return cx,top,w,h
-end
-
-local function DrawCornerBox(corners,x,y,w,h,len,clr)
-	local pts={
-		{Vector2.new(x,y),Vector2.new(x+len,y)},{Vector2.new(x,y),Vector2.new(x,y+len)},
-		{Vector2.new(x+w,y),Vector2.new(x+w-len,y)},{Vector2.new(x+w,y),Vector2.new(x+w,y+len)},
-		{Vector2.new(x,y+h),Vector2.new(x+len,y+h)},{Vector2.new(x,y+h),Vector2.new(x,y+h-len)},
-		{Vector2.new(x+w,y+h),Vector2.new(x+w-len,y+h)},{Vector2.new(x+w,y+h),Vector2.new(x+w,y+h-len)},
-	}
-	for i,pair in ipairs(pts) do
-		corners[i].From=pair[1]; corners[i].To=pair[2]; corners[i].Color=clr; corners[i].Visible=true
-	end
+local function GetSkeletonPairs(model)
+	if model:FindFirstChild("UpperTorso") then return SKELETON_R15 end
+	if model:FindFirstChild("Torso") then return SKELETON_R6 end
+	return nil
 end
 
 local function UpdateESP()
@@ -401,22 +384,20 @@ local function UpdateESP()
 		for _,obj in pairs(espObjects) do
 			obj.tracer.Visible=false; obj.hpBG.Visible=false; obj.hpFill.Visible=false
 			obj.nameText.Visible=false; obj.distText.Visible=false; obj.weapText.Visible=false
-			for _,l in ipairs(obj.corners) do l.Visible=false end
-			for _,l in ipairs(obj.skeleton) do l.Visible=false end
+			for i=1,#obj.corners do obj.corners[i].Visible=false end
+			for i=1,#obj.skeleton do obj.skeleton[i].Visible=false end
 		end
 		return
 	end
 	local myChar=LocalPlayer.Character
 	local myRoot=myChar and myChar:FindFirstChild("HumanoidRootPart")
+	local myPos=myRoot and myRoot.Position
 	local screenCenter=Vector2.new(Camera.ViewportSize.X/2,Camera.ViewportSize.Y)
-	for model,_ in pairs(espObjects) do
-		if not model or not model.Parent then RemoveESPDrawings(model) end
-	end
 	local targets={}
 	if Settings.ESP.ShowPlayers then
 		for _,p in ipairs(Players:GetPlayers()) do
 			if p~=LocalPlayer and p.Character then
-				table.insert(targets,{model=p.Character,isPlayer=true,player=p})
+				targets[#targets+1]={model=p.Character,isPlayer=true,player=p}
 			end
 		end
 	end
@@ -427,440 +408,131 @@ local function UpdateESP()
 			for _,obj in ipairs(Workspace:GetDescendants()) do
 				if obj:IsA("Model") and obj~=myChar
 					and not Players:GetPlayerFromCharacter(obj)
-					and obj:FindFirstChild("Humanoid")
+					and obj:FindFirstChildOfClass("Humanoid")
 					and obj:FindFirstChild("HumanoidRootPart") then
-					table.insert(npcCache,obj)
+					npcCache[#npcCache+1]=obj
 				end
 			end
 		end
-		for _,m in ipairs(npcCache) do table.insert(targets,{model=m,isPlayer=false,player=nil}) end
+		for i=1,#npcCache do targets[#targets+1]={model=npcCache[i],isPlayer=false,player=nil} end
 	end
-	for _,tgt in ipairs(targets) do
-		local model=tgt.model; local isPlayer=tgt.isPlayer
-		local hum=model:FindFirstChild("Humanoid")
+
+	local targetSet={}
+	for i=1,#targets do targetSet[targets[i].model]=true end
+	for model in pairs(espObjects) do
+		if not model or not model.Parent or not targetSet[model] then RemoveESPDrawings(model) end
+	end
+	-- Обновляем
+	for i=1,#targets do
+		local tgt=targets[i]; local model=tgt.model; local isPlayer=tgt.isPlayer
+		local hum=model:FindFirstChildOfClass("Humanoid")
 		local root=model:FindFirstChild("HumanoidRootPart")
 		local head=model:FindFirstChild("Head")
-		local function HideObj(obj)
-			if not obj then return end
+		if not hum or not root or not head or hum.Health<=0 then RemoveESPDrawings(model); continue end
+		local dist=myPos and (root.Position-myPos).Magnitude or 0
+		local obj=espObjects[model]
+		if dist>Settings.ESP.MaxDistance then
+			if obj then
+				obj.tracer.Visible=false; obj.hpBG.Visible=false; obj.hpFill.Visible=false
+				obj.nameText.Visible=false; obj.distText.Visible=false; obj.weapText.Visible=false
+				for k=1,#obj.corners do obj.corners[k].Visible=false end
+				for k=1,#obj.skeleton do obj.skeleton[k].Visible=false end
+			end
+			continue
+		end
+		if not obj then obj=CreateESPDrawings(model,isPlayer) end
+		-- Цвет ESP
+		local clr = isPlayer and Color3.fromRGB(255,80,80) or Color3.fromRGB(80,220,255)
+		-- Bounding box
+		local sp1=W2S(head.Position+Vector3.new(0,head.Size.Y*0.5,0))
+		local sp2=W2S(root.Position-Vector3.new(0,2.8,0))
+		if not sp1 or not sp2 then
 			obj.tracer.Visible=false; obj.hpBG.Visible=false; obj.hpFill.Visible=false
 			obj.nameText.Visible=false; obj.distText.Visible=false; obj.weapText.Visible=false
-			for _,l in ipairs(obj.corners) do l.Visible=false end
-			for _,l in ipairs(obj.skeleton) do l.Visible=false end
+			for k=1,#obj.corners do obj.corners[k].Visible=false end
+			for k=1,#obj.skeleton do obj.skeleton[k].Visible=false end
+			continue
 		end
-		if not hum or not root or not head or hum.Health<=0 then
-			RemoveESPDrawings(model)
-		else
-			local dist=myRoot and (root.Position-myRoot.Position).Magnitude or 0
-			if dist>Settings.ESP.MaxDistance then
-				HideObj(espObjects[model])
-			else
-				local obj=espObjects[model]
-				if not obj then obj=CreateESPDrawings(model,isPlayer) end
-				local clr=isPlayer and Color3.fromRGB(255,80,80) or Color3.fromRGB(80,220,255)
-				obj.color=clr
-				local cx,boxTop,bw,bh=GetBoundingBox(root,head)
-				if cx==nil then
-					HideObj(obj)
-				else
-					local boxX=cx-bw*0.5; local clen=Settings.ESP.CornerLen
-					if Settings.ESP.ShowCorners then DrawCornerBox(obj.corners,boxX,boxTop,bw,bh,clen,clr)
-					else for _,l in ipairs(obj.corners) do l.Visible=false end end
-					if Settings.ESP.ShowTracers then
-						local footSP=WorldToScreen(root.Position-Vector3.new(0,2.8,0))
-						if footSP then
-							obj.tracer.From=screenCenter; obj.tracer.To=footSP
-							obj.tracer.Color=clr; obj.tracer.Visible=true
-						else obj.tracer.Visible=false end
-					else obj.tracer.Visible=false end
-					if Settings.ESP.ShowHealth then
-						local pct=math.max(0,math.min(1,hum.Health/math.max(hum.MaxHealth,1)))
-						local barX=boxX-5; local barH=bh*pct
-						obj.hpBG.From=Vector2.new(barX,boxTop); obj.hpBG.To=Vector2.new(barX,boxTop+bh)
-						obj.hpBG.Color=Color3.fromRGB(20,20,20); obj.hpBG.Thickness=4; obj.hpBG.Visible=true
-						obj.hpFill.From=Vector2.new(barX,boxTop+bh); obj.hpFill.To=Vector2.new(barX,boxTop+bh-barH)
-						obj.hpFill.Color=HPColor(pct); obj.hpFill.Thickness=3; obj.hpFill.Visible=true
-					else obj.hpBG.Visible=false; obj.hpFill.Visible=false end
-					if Settings.ESP.ShowNames then
-						local label=""
-						if isPlayer and tgt.player then
-							label=tgt.player.DisplayName~="" and tgt.player.DisplayName or tgt.player.Name
-						else label=model.Name end
-						obj.nameText.Text=label; obj.nameText.Position=Vector2.new(cx,boxTop-16)
-						obj.nameText.Color=Color3.new(1,1,1); obj.nameText.Visible=true
-					else obj.nameText.Visible=false end
-					if Settings.ESP.ShowDistance then
-						local yOff=Settings.ESP.ShowNames and -3 or -16
-						obj.distText.Text=string.format("[%.0fm]",dist)
-						obj.distText.Position=Vector2.new(cx,boxTop+yOff-13)
-						obj.distText.Color=Color3.fromRGB(180,180,180); obj.distText.Visible=true
-					else obj.distText.Visible=false end
-					if Settings.ESP.ShowWeapon then
-						local weapName=""
-						if isPlayer and tgt.player then
-							local ch=tgt.player.Character
-							if ch then
-								local tool=ch:FindFirstChildOfClass("Tool")
-								if tool then weapName=tool.Name
-								else for _,item in ipairs(tgt.player.Backpack:GetChildren()) do
-									if item:IsA("Tool") then weapName=item.Name; break end
-								end end
-							end
-						end
-						if weapName~="" then
-							obj.weapText.Text="⚔ "..weapName
-							obj.weapText.Position=Vector2.new(cx,boxTop+bh+4)
-							obj.weapText.Color=Color3.fromRGB(255,210,80); obj.weapText.Visible=true
-						else obj.weapText.Visible=false end
-					else obj.weapText.Visible=false end
-					if Settings.ESP.ShowSkeleton then
-						for i,pair in ipairs(SKELETON_PAIRS) do
-							local p1=model:FindFirstChild(pair[1]); local p2=model:FindFirstChild(pair[2])
-							local line=obj.skeleton[i]
-							if p1 and p2 then
-								local sp1=WorldToScreen(p1.Position); local sp2=WorldToScreen(p2.Position)
-								if sp1 and sp2 then
-									line.From=sp1; line.To=sp2; line.Color=Color3.fromRGB(255,255,255); line.Visible=true
-								else line.Visible=false end
-							else line.Visible=false end
-						end
-					else for _,l in ipairs(obj.skeleton) do l.Visible=false end end
+		local top=math.min(sp1.Y,sp2.Y); local bottom=math.max(sp1.Y,sp2.Y)
+		local bh=bottom-top; local bw=bh*0.55; local cx=(sp1.X+sp2.X)*0.5
+		local boxX=cx-bw*0.5; local clen=Settings.ESP.CornerLen
+		-- Corners
+		if Settings.ESP.ShowCorners then
+			local x,y,w,h=boxX,top,bw,bh
+			local c=obj.corners
+			c[1].From=Vector2.new(x,y);     c[1].To=Vector2.new(x+clen,y);     c[1].Color=clr; c[1].Visible=true
+			c[2].From=Vector2.new(x,y);     c[2].To=Vector2.new(x,y+clen);     c[2].Color=clr; c[2].Visible=true
+			c[3].From=Vector2.new(x+w,y);   c[3].To=Vector2.new(x+w-clen,y);   c[3].Color=clr; c[3].Visible=true
+			c[4].From=Vector2.new(x+w,y);   c[4].To=Vector2.new(x+w,y+clen);   c[4].Color=clr; c[4].Visible=true
+			c[5].From=Vector2.new(x,y+h);   c[5].To=Vector2.new(x+clen,y+h);   c[5].Color=clr; c[5].Visible=true
+			c[6].From=Vector2.new(x,y+h);   c[6].To=Vector2.new(x,y+h-clen);   c[6].Color=clr; c[6].Visible=true
+			c[7].From=Vector2.new(x+w,y+h); c[7].To=Vector2.new(x+w-clen,y+h); c[7].Color=clr; c[7].Visible=true
+			c[8].From=Vector2.new(x+w,y+h); c[8].To=Vector2.new(x+w,y+h-clen); c[8].Color=clr; c[8].Visible=true
+		else for k=1,8 do obj.corners[k].Visible=false end end
+		-- Tracer
+		if Settings.ESP.ShowTracers then
+			local fp=W2S(root.Position-Vector3.new(0,2.8,0))
+			if fp then obj.tracer.From=screenCenter; obj.tracer.To=fp; obj.tracer.Color=clr; obj.tracer.Visible=true
+			else obj.tracer.Visible=false end
+		else obj.tracer.Visible=false end
+		-- HP
+		if Settings.ESP.ShowHealth then
+			local pct=math.max(0,math.min(1,hum.Health/math.max(hum.MaxHealth,1)))
+			local bx=boxX-5
+			obj.hpBG.From=Vector2.new(bx,top); obj.hpBG.To=Vector2.new(bx,top+bh)
+			obj.hpBG.Color=Color3.fromRGB(20,20,20); obj.hpBG.Thickness=4; obj.hpBG.Visible=true
+			obj.hpFill.From=Vector2.new(bx,top+bh); obj.hpFill.To=Vector2.new(bx,top+bh-bh*pct)
+			obj.hpFill.Color=HPColor(pct); obj.hpFill.Thickness=3; obj.hpFill.Visible=true
+		else obj.hpBG.Visible=false; obj.hpFill.Visible=false end
+		-- Name
+		if Settings.ESP.ShowNames then
+			local label=isPlayer and tgt.player
+				and(tgt.player.DisplayName~="" and tgt.player.DisplayName or tgt.player.Name)
+				or model.Name
+			obj.nameText.Text=label; obj.nameText.Position=Vector2.new(cx,top-16)
+			obj.nameText.Color=clr; obj.nameText.Visible=true
+		else obj.nameText.Visible=false end
+		-- Distance
+		if Settings.ESP.ShowDistance then
+			local yOff=Settings.ESP.ShowNames and -29 or -16
+			obj.distText.Text=string.format("[%.0fm]",dist)
+			obj.distText.Position=Vector2.new(cx,top+yOff)
+			obj.distText.Color=Color3.fromRGB(180,180,180); obj.distText.Visible=true
+		else obj.distText.Visible=false end
+		-- Weapon
+		if Settings.ESP.ShowWeapon and isPlayer and tgt.player then
+			local ch=tgt.player.Character
+			local tool=ch and ch:FindFirstChildOfClass("Tool")
+			if tool then
+				obj.weapText.Text="⚔ "..tool.Name
+				obj.weapText.Position=Vector2.new(cx,top+bh+4)
+				obj.weapText.Color=Color3.fromRGB(255,210,80); obj.weapText.Visible=true
+			else obj.weapText.Visible=false end
+		else obj.weapText.Visible=false end
+		-- Skeleton
+		if Settings.ESP.ShowSkeleton then
+			local pairs_list=GetSkeletonPairs(model)
+			if pairs_list then
+				for j=1,#pairs_list do
+					local p1=model:FindFirstChild(pairs_list[j][1])
+					local p2=model:FindFirstChild(pairs_list[j][2])
+					local line=obj.skeleton[j]
+					if p1 and p2 and line then
+						local s1=W2S(p1.Position); local s2=W2S(p2.Position)
+						if s1 and s2 then line.From=s1; line.To=s2; line.Color=Color3.fromRGB(255,255,255); line.Visible=true
+						else line.Visible=false end
+					elseif line then line.Visible=false end
 				end
-			end
-		end
-	end
-	local targetSet={}
-	for _,tgt in ipairs(targets) do targetSet[tgt.model]=true end
-	for model,_ in pairs(espObjects) do
-		if not targetSet[model] then RemoveESPDrawings(model) end
+				for j=#pairs_list+1,#obj.skeleton do obj.skeleton[j].Visible=false end
+			else for j=1,#obj.skeleton do obj.skeleton[j].Visible=false end end
+		else for j=1,#obj.skeleton do obj.skeleton[j].Visible=false end end
 	end
 end
-
 -- =====================================================================
--- ANTI-AIM
+-- CHAMS (Highlight-based — правильная реализация)
 -- =====================================================================
-local function StopAntiAim()
-	if antiAimConnection then antiAimConnection:Disconnect(); antiAimConnection=nil end
-end
+local chamsHighlights = {} -- { model -> { hl=Highlight, isPlayer=bool } }
 
-local function StartAntiAim()
-	StopAntiAim()
-	if not Settings.AntiAim.Enabled then return end
-	local lastTick,jitterFlip=0,1
-	antiAimConnection=RunService.Heartbeat:Connect(function()
-		if not Settings.AntiAim.Enabled then return end
-		if not LocalPlayer.Character then return end
-		local root=LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not root then return end
-		local now=tick()
-		if now-lastTick<Settings.AntiAim.Interval then return end
-		lastTick=now
-		local angle=0; local mode=Settings.AntiAim.Mode
-		if mode=="Random" then angle=math.random(0,360)
-		elseif mode=="Spin" then antiAimAngle=(antiAimAngle+Settings.AntiAim.SpinSpeed)%360; angle=antiAimAngle
-		elseif mode=="Static" then angle=Settings.AntiAim.StaticAngle
-		elseif mode=="Jitter" then jitterFlip=-jitterFlip; angle=Settings.AntiAim.JitterRange*jitterFlip end
-		pcall(function()
-			root.CFrame=CFrame.new(root.Position)*CFrame.Angles(0,math.rad(angle),0)
-		end)
-	end)
-end
-
--- =====================================================================
--- ДВИЖЕНИЕ
--- =====================================================================
-local function IsOnGround(char)
-	if not char or not char:FindFirstChild("HumanoidRootPart") then return false end
-	local hum=char:FindFirstChild("Humanoid"); if not hum then return false end
-	local s=hum:GetState()
-	if s==Enum.HumanoidStateType.Freefall or s==Enum.HumanoidStateType.Flying or s==Enum.HumanoidStateType.Jumping then return false end
-	local rp=RaycastParams.new()
-	rp.FilterDescendantsInstances={char}; rp.FilterType=Enum.RaycastFilterType.Exclude; rp.IgnoreWater=true
-	return Workspace:Raycast(char.HumanoidRootPart.Position,Vector3.new(0,-4,0),rp)~=nil
-end
-
-local function DisableBunnyHop()
-	if bhopConnection then bhopConnection:Disconnect(); bhopConnection=nil end
-end
-
-local function SetupBunnyHop()
-	DisableBunnyHop()
-	if not Settings.Movement.BunnyHop then return end
-	bhopConnection=RunService.Heartbeat:Connect(function()
-		if not LocalPlayer.Character then return end
-		local hum=LocalPlayer.Character:FindFirstChild("Humanoid")
-		local root=LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-		if not hum or not root or hum.Health<=0 then return end
-		if UserInputService:IsKeyDown(Enum.KeyCode.Space) and Settings.Movement.AutoJump then
-			local t=tick()
-			if t-lastJumpTime>=jumpCooldown and IsOnGround(LocalPlayer.Character) then
-				hum:ChangeState(Enum.HumanoidStateType.Jumping); lastJumpTime=t
-			end
-		end
-		local s=hum:GetState()
-		local inAir=s==Enum.HumanoidStateType.Freefall or s==Enum.HumanoidStateType.Jumping or s==Enum.HumanoidStateType.Flying
-		if inAir then
-			local mv=hum.MoveDirection
-			if mv.Magnitude>0 then
-				local vel=root.AssemblyLinearVelocity
-				if Vector3.new(vel.X,0,vel.Z).Magnitude<Settings.Movement.MaxSpeed then
-					local acc=mv*Settings.Movement.BHopSpeed
-					root.AssemblyLinearVelocity=Vector3.new(vel.X+acc.X,vel.Y,vel.Z+acc.Z)
-				end
-			end
-		end
-	end)
-end
-
--- =====================================================================
--- ТЕЛЕПОРТ
--- =====================================================================
-local function GetRandomPlayer()
-	local list={}
-	for _,p in ipairs(Players:GetPlayers()) do
-		if p~=LocalPlayer and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-			local h=p.Character:FindFirstChild("Humanoid")
-			if h and h.Health>0 then table.insert(list,p) end
-		end
-	end
-	return #list>0 and list[math.random(1,#list)] or nil
-end
-
-local function TeleportBehindPlayer(tp)
-	if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return false end
-	if not tp.Character or not tp.Character:FindFirstChild("HumanoidRootPart") then return false end
-	local tr=tp.Character.HumanoidRootPart
-	LocalPlayer.Character.HumanoidRootPart.CFrame=CFrame.new(
-		tr.Position+(-tr.CFrame.LookVector*Settings.Teleport.Distance),tr.Position)
-	return true
-end
-
-local function StopTeleport()
-	isTeleporting=false; currentTeleportTarget=nil
-	if teleportConnection then teleportConnection:Disconnect(); teleportConnection=nil end
-end
-
-local function TeleportToRandomPlayer()
-	if isTeleporting then return end
-	local tp=GetRandomPlayer(); if not tp then return end
-	isTeleporting=true; currentTeleportTarget=tp
-	local st=tick()
-	teleportConnection=RunService.Heartbeat:Connect(function()
-		if not isTeleporting or not currentTeleportTarget then
-			if teleportConnection then teleportConnection:Disconnect(); teleportConnection=nil end; return
-		end
-		if tick()-st>=Settings.Teleport.TeleportTime then
-			TeleportBehindPlayer(currentTeleportTarget); StopTeleport()
-		else TeleportBehindPlayer(currentTeleportTarget) end
-	end)
-end
-
--- =====================================================================
--- АИМБОТ
--- =====================================================================
-local function IsVisible(from, to, ignore)
-	local rp=RaycastParams.new()
-	rp.FilterDescendantsInstances={ignore,LocalPlayer.Character}
-	rp.FilterType=Enum.RaycastFilterType.Exclude; rp.IgnoreWater=true
-	local res=Workspace:Raycast(from,to-from,rp)
-	if not res then return true end
-	local h=res.Instance
-	while h and h.Parent do if h==ignore then return true end; h=h.Parent end
-	return false
-end
-
-local function GetClosestEnemy()
-	if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
-	local best,bestDist=nil,math.huge
-	local sc=Vector2.new(Camera.ViewportSize.X/2,Camera.ViewportSize.Y/2)
-	for _,p in ipairs(Players:GetPlayers()) do
-		if p~=LocalPlayer and p.Character then
-			if Settings.Aimbot.IgnoreTeam and p.Team==LocalPlayer.Team and p.Team~=nil then
-			else
-				local tp=p.Character:FindFirstChild(Settings.Aimbot.TargetPart)
-				local h=p.Character:FindFirstChild("Humanoid")
-				if tp and h and h.Health>0 then
-					local sp,onScreen=Camera:WorldToViewportPoint(tp.Position)
-					if onScreen then
-						local d=(Vector2.new(sp.X,sp.Y)-sc).Magnitude
-						if d<=Settings.Aimbot.FOV and d<bestDist and IsVisible(Camera.CFrame.Position,tp.Position,p.Character) then
-							best=p.Character; bestDist=d
-						end
-					end
-				end
-			end
-		end
-	end
-	return best
-end
-
-local function AimAt(target)
-	if not target then return end
-	local tp=target:FindFirstChild(Settings.Aimbot.TargetPart); if not tp then return end
-	Camera.CFrame=Camera.CFrame:Lerp(CFrame.new(Camera.CFrame.Position,tp.Position),Settings.Aimbot.Smoothness/100)
-end
-
--- =====================================================================
--- FAKE LAG (forward teleport + cube preview)
--- =====================================================================
-
-local function CreateFakeLagCube()
-	if fakeLagCube then
-		pcall(function() fakeLagCube:Destroy() end)
-	end
-	local cube = Instance.new("Part")
-	cube.Name           = "FakeLagPreview"
-	cube.Size           = Vector3.new(1.5, 1.5, 1.5)
-	cube.Anchored       = true
-	cube.CanCollide     = false
-	cube.CanQuery       = false
-	cube.CastShadow     = false
-	cube.Transparency   = 0.55
-	cube.Material       = Enum.Material.Neon
-	cube.Color          = Color3.fromRGB(100, 155, 230)
-	cube.Parent         = Workspace
-
-	local sel = Instance.new("SelectionBox")
-	sel.Adornee             = cube
-	sel.Color3              = Color3.fromRGB(130, 180, 255)
-	sel.LineThickness       = 0.03
-	sel.SurfaceTransparency = 1
-	sel.SurfaceColor3       = Color3.fromRGB(130, 180, 255)
-	sel.Parent              = Workspace
-
-	fakeLagCube = cube
-end
-
-local function DestroyFakeLagCube()
-	if fakeLagCube then
-		for _, v in ipairs(Workspace:GetChildren()) do
-			if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
-				pcall(function() v:Destroy() end)
-			end
-		end
-		pcall(function() fakeLagCube:Destroy() end)
-		fakeLagCube = nil
-	end
-end
-
--- Проверка: есть ли земля под позицией (не телепортируем в воздухе)
-local function IsGroundBelow(pos, char)
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = { char }
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.IgnoreWater = true
-	return Workspace:Raycast(pos + Vector3.new(0, 1, 0), Vector3.new(0, -7, 0), rp) ~= nil
-end
-
--- Проверка: нет ли стены между текущей и целевой позицией
-local function IsPathClear(fromPos, toPos, char)
-	local rp = RaycastParams.new()
-	rp.FilterDescendantsInstances = { char }
-	rp.FilterType = Enum.RaycastFilterType.Exclude
-	rp.IgnoreWater = true
-	local dir = toPos - fromPos
-	local res = Workspace:Raycast(fromPos, dir, rp)
-	return res == nil
-end
-
-local function GetFakeLagTarget(char)
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then return nil end
-	local dist    = Settings.FakeLag.Distance
-	local forward = root.CFrame.LookVector
-	local origin  = root.Position
-	local flatFwd = Vector3.new(forward.X, 0, forward.Z)
-	if flatFwd.Magnitude < 0.001 then return nil end
-	local target  = origin + flatFwd.Unit * dist
-	if not IsGroundBelow(target, char) then return nil end
-	if not IsPathClear(origin + Vector3.new(0, 1, 0), target + Vector3.new(0, 1, 0), char) then return nil end
-	return target
-end
-
-local function UpdateFakeLagCube()
-	if not Settings.FakeLag.Enabled or not Settings.FakeLag.ShowCube then
-		if fakeLagCube then
-			pcall(function() fakeLagCube.Transparency = 1 end)
-		end
-		return
-	end
-	local char = LocalPlayer.Character
-	local root = char and char:FindFirstChild("HumanoidRootPart")
-	if not root then
-		if fakeLagCube then pcall(function() fakeLagCube.Transparency = 1 end) end
-		return
-	end
-	if not fakeLagCube or not fakeLagCube.Parent then
-		CreateFakeLagCube()
-	end
-	local target = GetFakeLagTarget(char)
-	if target then
-		-- Синий = телепорт возможен
-		fakeLagCube.Transparency = 0.55
-		fakeLagCube.CFrame       = CFrame.new(target)
-		fakeLagCube.Color        = Color3.fromRGB(100, 155, 230)
-		for _, v in ipairs(Workspace:GetChildren()) do
-			if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
-				v.Color3 = Color3.fromRGB(130, 180, 255)
-			end
-		end
-	else
-		-- Красный = заблокировано (стена / воздух)
-		local forward = root.CFrame.LookVector
-		local flatFwd = Vector3.new(forward.X, 0, forward.Z)
-		if flatFwd.Magnitude > 0.001 then
-			local blocked = root.Position + flatFwd.Unit * Settings.FakeLag.Distance
-			fakeLagCube.Transparency = 0.65
-			fakeLagCube.CFrame       = CFrame.new(blocked)
-			fakeLagCube.Color        = Color3.fromRGB(200, 60, 60)
-			for _, v in ipairs(Workspace:GetChildren()) do
-				if v:IsA("SelectionBox") and v.Adornee == fakeLagCube then
-					v.Color3 = Color3.fromRGB(200, 60, 60)
-				end
-			end
-		end
-	end
-end
-
-local function StopFakeLag()
-	if fakeLagConnection then
-		fakeLagConnection:Disconnect()
-		fakeLagConnection = nil
-	end
-end
-
-local function StartFakeLag()
-	StopFakeLag()
-	if not Settings.FakeLag.Enabled then return end
-	local lastTick = 0
-	fakeLagConnection = RunService.Heartbeat:Connect(function()
-		if not Settings.FakeLag.Enabled then return end
-
-		local char = LocalPlayer.Character
-		local root = char and char:FindFirstChild("HumanoidRootPart")
-		local hum  = char and char:FindFirstChild("Humanoid")
-		if not root or not hum or hum.Health <= 0 then return end
-
-		-- Только на земле
-		if not IsOnGround(char) then return end
-
-		-- Проверка реальной физической скорости (не MoveDirection)
-		local vel = root.AssemblyLinearVelocity
-		local horizSpeed = Vector3.new(vel.X, 0, vel.Z).Magnitude
-		if horizSpeed < 1 then return end
-
-		local now = tick()
-		if now - lastTick < Settings.FakeLag.Interval then return end
-		lastTick = now
-
-		local target = GetFakeLagTarget(char)
-		if target then
-			root.CFrame = CFrame.new(target, target + root.CFrame.LookVector)
-		end
-	end)
-end
-
--- =====================================================================
--- CHAMS (Highlight-based)
--- =====================================================================
 local function GetChamsColor(isPlayer, visible)
 	local CH = Settings.Chams
 	if isPlayer then
@@ -891,12 +563,16 @@ end
 
 local function ApplyChamsToModel(model, isPlayer)
 	if chamsHighlights[model] then return end
-	local hl = Instance.new("SelectionBox")
-	hl.Adornee         = model
-	hl.LineThickness   = 0
-	hl.SurfaceTransparency = 0.5
-	hl.SurfaceColor3   = Color3.fromRGB(255, 60, 60)
-	hl.Parent          = model
+	-- Highlight — правильный способ делать чамсы в Roblox
+	-- AlwaysOnTop = видно сквозь стены, Enabled = нормальный режим
+	local hl = Instance.new("Highlight")
+	hl.Adornee             = model
+	hl.FillColor           = Color3.fromRGB(255, 60, 60)
+	hl.OutlineColor        = Color3.fromRGB(255, 60, 60)
+	hl.FillTransparency    = 0.5
+	hl.OutlineTransparency = 0
+	hl.DepthMode           = Enum.HighlightDepthMode.AlwaysOnTop
+	hl.Parent              = model
 	chamsHighlights[model] = { hl = hl, isPlayer = isPlayer }
 end
 
@@ -914,17 +590,11 @@ local function ClearAllChams()
 	chamsHighlights = {}
 end
 
-local chamsLastUpdate = 0
 local function UpdateChams()
 	if not Settings.Chams.Enabled then
-		ClearAllChams()
-		return
+		ClearAllChams(); return
 	end
-
-	local now = tick()
 	local myChar = LocalPlayer.Character
-
-	-- Собираем цели
 	local targets = {}
 	if Settings.Chams.Players then
 		for _, p in ipairs(Players:GetPlayers()) do
@@ -949,37 +619,138 @@ local function UpdateChams()
 			end
 		end
 	end
-
-	-- Удаляем чамсы для тех кто исчез
 	local targetSet = {}
 	for _, t in ipairs(targets) do targetSet[t.model] = true end
 	for model, _ in pairs(chamsHighlights) do
 		if not targetSet[model] then RemoveChamsFromModel(model) end
 	end
-
-	-- Применяем/обновляем
 	for _, t in ipairs(targets) do
-		local model = t.model
-		local isPlayer = t.isPlayer
-		if not chamsHighlights[model] then
-			ApplyChamsToModel(model, isPlayer)
-		end
+		local model, isPlayer = t.model, t.isPlayer
+		if not chamsHighlights[model] then ApplyChamsToModel(model, isPlayer) end
 		local data = chamsHighlights[model]
 		if data and data.hl and data.hl.Parent then
 			local visible = IsModelVisible(model)
 			local color, transp = GetChamsColor(isPlayer, visible)
-			data.hl.SurfaceColor3       = color
-			data.hl.SurfaceTransparency = transp
-			-- Цвет обводки (чуть темнее)
-			data.hl.Color3 = Color3.new(
-				math.max(0, color.R - 0.15),
-				math.max(0, color.G - 0.15),
-				math.max(0, color.B - 0.15)
+			data.hl.FillColor        = color
+			data.hl.FillTransparency = transp
+			data.hl.OutlineColor     = Color3.new(
+				math.max(0, color.R - 0.1),
+				math.max(0, color.G - 0.1),
+				math.max(0, color.B - 0.1)
 			)
-			data.hl.LineThickness = 0.06
+			-- Wallcheck: сквозь стены AlwaysOnTop, видимые — обычный режим
+			data.hl.DepthMode = (not visible and Settings.Chams.Wallcheck)
+				and Enum.HighlightDepthMode.AlwaysOnTop
+				or Enum.HighlightDepthMode.Occluded
 		end
 	end
 end
+
+-- =====================================================================
+-- SILENT AIM (Camera-based, совместим с Xeno)
+-- =====================================================================
+-- Работает через быстрый поворот камеры к цели перед выстрелом и
+-- возврат обратно через 1 RenderStepped — пули летят в цель, камера возвращается
+local silentAimOrigCF  = nil
+local silentAimLocking = false
+
+local function GetSilentAimTarget()
+	if not LocalPlayer.Character then return nil end
+	local sc = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+	local best, bestDist = nil, math.huge
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer and p.Character then
+			local tp = p.Character:FindFirstChild(Settings.SilentAim.TargetPart or "HumanoidRootPart")
+			local hum = p.Character:FindFirstChild("Humanoid")
+			if tp and hum and hum.Health > 0 then
+				local sp, onScreen = Camera:WorldToViewportPoint(tp.Position)
+				if onScreen then
+					local d = (Vector2.new(sp.X, sp.Y) - sc).Magnitude
+					if d <= (Settings.SilentAim.FOV or 360) and d < bestDist then
+						best = tp; bestDist = d
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- Хук на ЛКМ — поворачиваем камеру к цели на 1 кадр
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if not Settings.SilentAim or not Settings.SilentAim.Enabled then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	local target = GetSilentAimTarget()
+	if not target then return end
+	silentAimOrigCF = Camera.CFrame
+	silentAimLocking = true
+	Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	if silentAimLocking and silentAimOrigCF then
+		-- возвращаем камеру через 1 кадр чтобы выстрел успел уйти
+		RunService.RenderStepped:Wait()
+		Camera.CFrame = silentAimOrigCF
+		silentAimOrigCF = nil
+		silentAimLocking = false
+	end
+end)
+
+-- =====================================================================
+-- SILENT AIM (Camera-based, совместим с Xeno)
+-- =====================================================================
+-- Работает через быстрый поворот камеры к цели перед выстрелом и
+-- возврат обратно через 1 RenderStepped — пули летят в цель, камера возвращается
+local silentAimOrigCF  = nil
+local silentAimLocking = false
+
+local function GetSilentAimTarget()
+	if not LocalPlayer.Character then return nil end
+	local sc = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+	local best, bestDist = nil, math.huge
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= LocalPlayer and p.Character then
+			local tp = p.Character:FindFirstChild(Settings.SilentAim.TargetPart or "HumanoidRootPart")
+			local hum = p.Character:FindFirstChild("Humanoid")
+			if tp and hum and hum.Health > 0 then
+				local sp, onScreen = Camera:WorldToViewportPoint(tp.Position)
+				if onScreen then
+					local d = (Vector2.new(sp.X, sp.Y) - sc).Magnitude
+					if d <= (Settings.SilentAim.FOV or 360) and d < bestDist then
+						best = tp; bestDist = d
+					end
+				end
+			end
+		end
+	end
+	return best
+end
+
+-- Хук на ЛКМ — поворачиваем камеру к цели на 1 кадр
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if not Settings.SilentAim or not Settings.SilentAim.Enabled then return end
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	local target = GetSilentAimTarget()
+	if not target then return end
+	silentAimOrigCF = Camera.CFrame
+	silentAimLocking = true
+	Camera.CFrame = CFrame.new(Camera.CFrame.Position, target.Position)
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.UserInputType ~= Enum.UserInputType.MouseButton1 then return end
+	if silentAimLocking and silentAimOrigCF then
+		-- возвращаем камеру через 1 кадр чтобы выстрел успел уйти
+		RunService.RenderStepped:Wait()
+		Camera.CFrame = silentAimOrigCF
+		silentAimOrigCF = nil
+		silentAimLocking = false
+	end
+end)
 
 -- =====================================================================
 -- GUI
@@ -1028,7 +799,7 @@ local function CreateGUI()
 	local wmLbl=Instance.new("TextLabel",WatermarkFrame)
 	wmLbl.Size=UDim2.new(0,180,1,0); wmLbl.Position=UDim2.new(0,10,0,0)
 	wmLbl.BackgroundTransparency=1
-	wmLbl.Text="RAGEVOID  · alpha v0.9.2  ·  cloudbound.dev"
+	wmLbl.Text="RAGEVOID  · alpha v0.9.9  ·  cloudbound.dev"
 	wmLbl.TextColor3=C.Text; wmLbl.Font=Enum.Font.GothamBold
 	wmLbl.TextSize=11; wmLbl.TextXAlignment=Enum.TextXAlignment.Left
 	wmLbl.ZIndex=101
@@ -1299,7 +1070,7 @@ local function CreateGUI()
 	local titleLbl=Instance.new("TextLabel",TitleBar)
 	titleLbl.Size=UDim2.new(1,-SW,0,TB_H); titleLbl.Position=UDim2.new(0,SW,0,0)
 	titleLbl.BackgroundTransparency=1
-	titleLbl.Text="RAGEVOID  ·  alpha v0.9"
+	titleLbl.Text="RAGEVOID  ·  alpha v0.9.9"
 	titleLbl.TextColor3=C.Text; titleLbl.Font=Enum.Font.GothamBold
 	titleLbl.TextSize= IS_MOBILE and 7 or 11; titleLbl.ZIndex=22
 	local titleDot=Instance.new("Frame",TitleBar)
@@ -1573,88 +1344,81 @@ local function CreateGUI()
 	end
 
 	-- ВКЛАДКИ
-	local AimbotTab = CreateTab("AIMBOT",  Icons.aimbot,     1)
-	local ESPTab    = CreateTab("ESP",     Icons.esp,        2)
-	local MoveTab   = CreateTab("MOVEMENT",Icons.movement,   3)
-	local VisualsTab= CreateTab("VISUALS", Icons.visuals,    4)
-	local ConfigTab = CreateTab("CONFIG",  Icons.configlist, 5)
-	local InfoTab   = CreateTab("INFO",    Icons.info,       6)
-	local SetTab    = CreateTab("SETTINGS",Icons.settings,   7)
+	local AimbotTab  = CreateTab("AIMBOT",   Icons.aimbot,     1)
+	local ESPTab     = CreateTab("ESP",      Icons.esp,        2)
+	local MoveTab    = CreateTab("MOVEMENT", Icons.movement,   3)
+	local VisualsTab = CreateTab("VISUALS",  Icons.visuals,    4)
+	local GuiTab     = CreateTab("GUI TEST", Icons.guitab,     5)
+	local ConfigTab  = CreateTab("CONFIG",   Icons.configlist, 6)
+	local InfoTab    = CreateTab("INFO",     Icons.info,       7)
+	local SetTab     = CreateTab("SETTINGS", Icons.settings,   8)
 
 	-- ===== AIMBOT =====
 	SectionLabel(AimbotTab,"Aimbot")
-	local _,setAimbotEnabled     = Toggle(AimbotTab,"Enable Aimbot",Settings.Aimbot.Enabled,function(v)
+	S.setAimbotEnabled = Toggle(AimbotTab,"Enable Aimbot",Settings.Aimbot.Enabled,function(v)
 		Settings.Aimbot.Enabled=v; FOVCircle.Visible=v and Settings.Aimbot.ShowFOV
 	end)
-	local _,setAimbotShowFOV     = Toggle(AimbotTab,"Show FOV Circle",Settings.Aimbot.ShowFOV,function(v)
+	S.setAimbotShowFOV = Toggle(AimbotTab,"Show FOV Circle",Settings.Aimbot.ShowFOV,function(v)
 		Settings.Aimbot.ShowFOV=v; FOVCircle.Visible=v and Settings.Aimbot.Enabled
 	end)
-	local _,setAimbotIgnoreTeam  = Toggle(AimbotTab,"Ignore Teammates",Settings.Aimbot.IgnoreTeam,function(v) Settings.Aimbot.IgnoreTeam=v end)
-	local _,setAimbotFOV         = Slider(AimbotTab,"FOV Size",20,500,Settings.Aimbot.FOV,function(v)
+	S.setAimbotIgnoreTeam = Toggle(AimbotTab,"Ignore Teammates",Settings.Aimbot.IgnoreTeam,function(v) Settings.Aimbot.IgnoreTeam=v end)
+	S.setAimbotFOV = Slider(AimbotTab,"FOV Size",20,500,Settings.Aimbot.FOV,function(v)
 		Settings.Aimbot.FOV=v; if FOVCircle then FOVCircle.Size=UDim2.new(0,v*2,0,v*2) end
 	end)
-	local _,setAimbotSmooth      = Slider(AimbotTab,"Smoothness",1,100,Settings.Aimbot.Smoothness,function(v) Settings.Aimbot.Smoothness=v end)
+	S.setAimbotSmooth = Slider(AimbotTab,"Smoothness",1,100,Settings.Aimbot.Smoothness,function(v) Settings.Aimbot.Smoothness=v end)
 	SectionLabel(AimbotTab,"Anti-Aim")
-	local _,setAntiAimEnabled    = Toggle(AimbotTab,"Enable Anti-Aim",Settings.AntiAim.Enabled,function(v)
+	S.setAntiAimEnabled = Toggle(AimbotTab,"Enable Anti-Aim",Settings.AntiAim.Enabled,function(v)
 		Settings.AntiAim.Enabled=v; if v then StartAntiAim() else StopAntiAim() end
 	end)
-	local _,setAntiAimMode       = Dropdown(AimbotTab,"Mode",{"Random","Spin","Static","Jitter"},Settings.AntiAim.Mode,function(v)
+	S.setAntiAimMode = Dropdown(AimbotTab,"Mode",{"Random","Spin","Static","Jitter"},Settings.AntiAim.Mode,function(v)
 		Settings.AntiAim.Mode=v; if Settings.AntiAim.Enabled then StartAntiAim() end
 	end)
-	local _,setAntiAimSpin       = Slider(AimbotTab,"Spin Speed",1,50,Settings.AntiAim.SpinSpeed,function(v) Settings.AntiAim.SpinSpeed=v end)
-	local _,setAntiAimStatic     = Slider(AimbotTab,"Static Angle",0,360,Settings.AntiAim.StaticAngle,function(v) Settings.AntiAim.StaticAngle=v end)
-	local _,setAntiAimJitter     = Slider(AimbotTab,"Jitter Range",10,180,Settings.AntiAim.JitterRange,function(v) Settings.AntiAim.JitterRange=v end)
-	local _,setAntiAimInterval   = Slider(AimbotTab,"Interval (ms)",1,500,math.floor(Settings.AntiAim.Interval*1000),function(v) Settings.AntiAim.Interval=v/1000 end)
+	S.setAntiAimSpin = Slider(AimbotTab,"Spin Speed",1,50,Settings.AntiAim.SpinSpeed,function(v) Settings.AntiAim.SpinSpeed=v end)
+	S.setAntiAimStatic = Slider(AimbotTab,"Static Angle",0,360,Settings.AntiAim.StaticAngle,function(v) Settings.AntiAim.StaticAngle=v end)
+	S.setAntiAimJitter = Slider(AimbotTab,"Jitter Range",10,180,Settings.AntiAim.JitterRange,function(v) Settings.AntiAim.JitterRange=v end)
+	S.setAntiAimInterval = Slider(AimbotTab,"Interval (ms)",1,500,math.floor(Settings.AntiAim.Interval*1000),function(v) Settings.AntiAim.Interval=v/1000 end)
+
+	SectionLabel(AimbotTab,"Silent Aim")
+	S.setSilentAimEnabled = Toggle(AimbotTab,"Enable Silent Aim",Settings.SilentAim.Enabled,function(v)
+		Settings.SilentAim.Enabled=v
+	end)
+	S.setSilentAimFOV = Slider(AimbotTab,"SA FOV (px)",50,600,Settings.SilentAim.FOV,function(v)
+		Settings.SilentAim.FOV=v
+	end)
 
 	-- ===== ESP =====
 	SectionLabel(ESPTab,"Targets")
-	local _,setESPEnabled        = Toggle(ESPTab,"Enable ESP",Settings.ESP.Enabled,function(v)
+	S.setESPEnabled = Toggle(ESPTab,"Enable ESP",Settings.ESP.Enabled,function(v)
 		Settings.ESP.Enabled=v; if not v then ClearAllESP() end
 	end)
-	local _,setESPPlayers        = Toggle(ESPTab,"Show Players",Settings.ESP.ShowPlayers,function(v) Settings.ESP.ShowPlayers=v end)
-	local _,setESPNPCs           = Toggle(ESPTab,"Show NPCs",Settings.ESP.ShowNPCs,function(v) Settings.ESP.ShowNPCs=v end)
+	S.setESPPlayers = Toggle(ESPTab,"Show Players",Settings.ESP.ShowPlayers,function(v) Settings.ESP.ShowPlayers=v end)
+	S.setESPNPCs = Toggle(ESPTab,"Show NPCs",Settings.ESP.ShowNPCs,function(v) Settings.ESP.ShowNPCs=v end)
 	SectionLabel(ESPTab,"Render")
-	local _,setESPCorners        = Toggle(ESPTab,"Corner Box",Settings.ESP.ShowCorners,function(v) Settings.ESP.ShowCorners=v end)
-	local _,setESPTracers        = Toggle(ESPTab,"Tracers",Settings.ESP.ShowTracers,function(v) Settings.ESP.ShowTracers=v end)
-	local _,setESPSkeleton       = Toggle(ESPTab,"Skeleton",Settings.ESP.ShowSkeleton,function(v) Settings.ESP.ShowSkeleton=v end)
-	local _,setESPNames          = Toggle(ESPTab,"Names",Settings.ESP.ShowNames,function(v) Settings.ESP.ShowNames=v end)
-	local _,setESPHealth         = Toggle(ESPTab,"HP Bar",Settings.ESP.ShowHealth,function(v) Settings.ESP.ShowHealth=v end)
-	local _,setESPDistance       = Toggle(ESPTab,"Distance",Settings.ESP.ShowDistance,function(v) Settings.ESP.ShowDistance=v end)
-	local _,setESPWeapon         = Toggle(ESPTab,"Weapon",Settings.ESP.ShowWeapon,function(v) Settings.ESP.ShowWeapon=v end)
+	S.setESPCorners = Toggle(ESPTab,"Corner Box",Settings.ESP.ShowCorners,function(v) Settings.ESP.ShowCorners=v end)
+	S.setESPTracers = Toggle(ESPTab,"Tracers",Settings.ESP.ShowTracers,function(v) Settings.ESP.ShowTracers=v end)
+	S.setESPSkeleton = Toggle(ESPTab,"Skeleton",Settings.ESP.ShowSkeleton,function(v) Settings.ESP.ShowSkeleton=v end)
+	S.setESPNames = Toggle(ESPTab,"Names",Settings.ESP.ShowNames,function(v) Settings.ESP.ShowNames=v end)
+	S.setESPHealth = Toggle(ESPTab,"HP Bar",Settings.ESP.ShowHealth,function(v) Settings.ESP.ShowHealth=v end)
+	S.setESPDistance = Toggle(ESPTab,"Distance",Settings.ESP.ShowDistance,function(v) Settings.ESP.ShowDistance=v end)
+	S.setESPWeapon = Toggle(ESPTab,"Weapon",Settings.ESP.ShowWeapon,function(v) Settings.ESP.ShowWeapon=v end)
 	SectionLabel(ESPTab,"Distance")
-	local _,setESPCornerLen      = Slider(ESPTab,"Corner Length",4,20,Settings.ESP.CornerLen,function(v) Settings.ESP.CornerLen=v end)
-	local _,setESPMaxDist        = Slider(ESPTab,"Max Distance",100,2000,Settings.ESP.MaxDistance,function(v) Settings.ESP.MaxDistance=v end)
+	S.setESPCornerLen = Slider(ESPTab,"Corner Length",4,20,Settings.ESP.CornerLen,function(v) Settings.ESP.CornerLen=v end)
+	S.setESPMaxDist = Slider(ESPTab,"Max Distance",100,2000,Settings.ESP.MaxDistance,function(v) Settings.ESP.MaxDistance=v end)
 
-	SectionLabel(ESPTab,"Chams")
-	local _,setChamsEnabled      = Toggle(ESPTab,"Enable Chams",Settings.Chams.Enabled,function(v)
+	SectionLabel(ESPTab,"Chams ISN'T WORKING RIGHT NOW PLEASE DONT TURN ON")
+	S.setChamsEnabled   = Toggle(ESPTab,"isnt do anything",Settings.Chams.Enabled,function(v)
 		Settings.Chams.Enabled=v; if not v then ClearAllChams() end
 	end)
-	local _,setChamsPlayers      = Toggle(ESPTab,"Players",Settings.Chams.Players,function(v) Settings.Chams.Players=v end)
-	local _,setChamsNPCs         = Toggle(ESPTab,"NPCs",Settings.Chams.NPCs,function(v) Settings.Chams.NPCs=v end)
-	local _,setChamsWallcheck    = Toggle(ESPTab,"Wall Color Diff",Settings.Chams.Wallcheck,function(v) Settings.Chams.Wallcheck=v end)
-
-	SectionLabel(ESPTab,"Player Color")
-	local _,setChamsPR           = Slider(ESPTab,"R",0,255,Settings.Chams.PlayerR,function(v) Settings.Chams.PlayerR=v end)
-	local _,setChamsPG           = Slider(ESPTab,"G",0,255,Settings.Chams.PlayerG,function(v) Settings.Chams.PlayerG=v end)
-	local _,setChamsPB           = Slider(ESPTab,"B",0,255,Settings.Chams.PlayerB,function(v) Settings.Chams.PlayerB=v end)
-
-	SectionLabel(ESPTab,"Player Wall Color")
-	local _,setChamsPWR          = Slider(ESPTab,"R",0,255,Settings.Chams.PlayerWallR,function(v) Settings.Chams.PlayerWallR=v end)
-	local _,setChamsPWG          = Slider(ESPTab,"G",0,255,Settings.Chams.PlayerWallG,function(v) Settings.Chams.PlayerWallG=v end)
-	local _,setChamsPWB          = Slider(ESPTab,"B",0,255,Settings.Chams.PlayerWallB,function(v) Settings.Chams.PlayerWallB=v end)
-
-	SectionLabel(ESPTab,"Transparency")
-	local _,setChamsTransp       = Slider(ESPTab,"Visible Transp",0,95,math.floor(Settings.Chams.Transparency*100),function(v) Settings.Chams.Transparency=v/100 end)
-	local _,setChamsWallTransp   = Slider(ESPTab,"Wall Transp",0,95,math.floor(Settings.Chams.WallTransparency*100),function(v) Settings.Chams.WallTransparency=v/100 end)
+	
 
 	-- ===== MOVEMENT =====
 	SectionLabel(MoveTab,"Movement")
-	local _,setBhop              = Toggle(MoveTab,"Bunny Hop",Settings.Movement.BunnyHop,function(v)
+	S.setBhop = Toggle(MoveTab,"Bunny Hop",Settings.Movement.BunnyHop,function(v)
 		Settings.Movement.BunnyHop=v; if v then SetupBunnyHop() else DisableBunnyHop() end
 	end)
-	local _,setAutoJump          = Toggle(MoveTab,"Auto Jump",Settings.Movement.AutoJump,function(v) Settings.Movement.AutoJump=v end)
-	local _,setBhopSpeed         = Slider(MoveTab,"BHop Speed",1,50,Settings.Movement.BHopSpeed,function(v) Settings.Movement.BHopSpeed=v end)
-	local _,setMaxSpeed          = Slider(MoveTab,"Max Speed",50,200,Settings.Movement.MaxSpeed,function(v) Settings.Movement.MaxSpeed=v end)
+	S.setAutoJump = Toggle(MoveTab,"Auto Jump",Settings.Movement.AutoJump,function(v) Settings.Movement.AutoJump=v end)
+	S.setBhopSpeed = Slider(MoveTab,"BHop Speed",1,50,Settings.Movement.BHopSpeed,function(v) Settings.Movement.BHopSpeed=v end)
+	S.setMaxSpeed = Slider(MoveTab,"Max Speed",50,200,Settings.Movement.MaxSpeed,function(v) Settings.Movement.MaxSpeed=v end)
 	SectionLabel(MoveTab,"Teleport")
 	Button(MoveTab,"Teleport to Random",C.Accent,function()
 		if isTeleporting then StopTeleport(); task.wait(0.2) end
@@ -1663,66 +1427,67 @@ local function CreateGUI()
 	Button(MoveTab,"Skip to Next Target",C.Orange,function()
 		if isTeleporting then StopTeleport(); task.wait(0.2); TeleportToRandomPlayer() end
 	end)
-	local _,setTPTime            = Slider(MoveTab,"TP Time (sec)",0,3,Settings.Teleport.TeleportTime,function(v) Settings.Teleport.TeleportTime=v end)
-	local _,setTPDist            = Slider(MoveTab,"Distance Behind",3,10,Settings.Teleport.Distance,function(v) Settings.Teleport.Distance=v end)
+	S.setTPTime = Slider(MoveTab,"TP Time (sec)",0,3,Settings.Teleport.TeleportTime,function(v) Settings.Teleport.TeleportTime=v end)
+	S.setTPDist = Slider(MoveTab,"Distance Behind",3,10,Settings.Teleport.Distance,function(v) Settings.Teleport.Distance=v end)
 
 	-- ===== FAKE LAG =====
 	SectionLabel(MoveTab,"Fake Lag")
-	local _,setFakeLagEnabled    = Toggle(MoveTab,"Enable Fake Lag",Settings.FakeLag.Enabled,function(v)
+	S.setFakeLagEnabled = Toggle(MoveTab,"Enable Fake Lag",Settings.FakeLag.Enabled,function(v)
 		Settings.FakeLag.Enabled=v
 		if v then StartFakeLag(); if Settings.FakeLag.ShowCube then CreateFakeLagCube() end
 		else StopFakeLag(); DestroyFakeLagCube() end
 	end)
-	local _,setFakeLagCube       = Toggle(MoveTab,"Show Preview Cube",Settings.FakeLag.ShowCube,function(v)
+	S.setFakeLagCube = Toggle(MoveTab,"Show Preview Cube",Settings.FakeLag.ShowCube,function(v)
 		Settings.FakeLag.ShowCube=v
 		if not v then if fakeLagCube then pcall(function() fakeLagCube.Transparency=1 end) end end
 	end)
-	local _,setFLDist            = Slider(MoveTab,"FL Distance",5,50,Settings.FakeLag.Distance,function(v) Settings.FakeLag.Distance=v end)
-	local _,setFLInterval        = Slider(MoveTab,"FL Interval (ms)",50,500,math.floor(Settings.FakeLag.Interval*1000),function(v)
+	S.setFLDist = Slider(MoveTab,"FL Distance",5,50,Settings.FakeLag.Distance,function(v) Settings.FakeLag.Distance=v end)
+	S.setFLInterval = Slider(MoveTab,"FL Interval (ms)",50,500,math.floor(Settings.FakeLag.Interval*1000),function(v)
 		Settings.FakeLag.Interval=v/1000
 		if Settings.FakeLag.Enabled then StartFakeLag() end
 	end)
 
+	-- ===== SILENT AIM =====
 	-- ===== VISUALS =====
 	SectionLabel(VisualsTab,"Lighting")
-	local _,setVBrightness       = Slider(VisualsTab,"Brightness",0,10,Settings.Visuals.Brightness,function(v)
+	S.setVBrightness = Slider(VisualsTab,"Brightness",0,10,Settings.Visuals.Brightness,function(v)
 		Settings.Visuals.Brightness=v; pcall(function() Lighting.Brightness=v end)
 	end)
-	local _,setVAmbR             = Slider(VisualsTab,"Ambient R",0,255,Settings.Visuals.AmbientR,function(v)
+	S.setVAmbR = Slider(VisualsTab,"Ambient R",0,255,Settings.Visuals.AmbientR,function(v)
 		Settings.Visuals.AmbientR=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
-	local _,setVAmbG             = Slider(VisualsTab,"Ambient G",0,255,Settings.Visuals.AmbientG,function(v)
+	S.setVAmbG = Slider(VisualsTab,"Ambient G",0,255,Settings.Visuals.AmbientG,function(v)
 		Settings.Visuals.AmbientG=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
-	local _,setVAmbB             = Slider(VisualsTab,"Ambient B",0,255,Settings.Visuals.AmbientB,function(v)
+	S.setVAmbB = Slider(VisualsTab,"Ambient B",0,255,Settings.Visuals.AmbientB,function(v)
 		Settings.Visuals.AmbientB=v
 		pcall(function() Lighting.Ambient=Color3.fromRGB(Settings.Visuals.AmbientR,Settings.Visuals.AmbientG,Settings.Visuals.AmbientB) end)
 	end)
 	SectionLabel(VisualsTab,"Fog")
-	local _,setVFog              = Toggle(VisualsTab,"Enable Fog",Settings.Visuals.FogEnabled,function(v)
+	S.setVFog = Toggle(VisualsTab,"Enable Fog",Settings.Visuals.FogEnabled,function(v)
 		Settings.Visuals.FogEnabled=v
 		pcall(function() Lighting.FogEnd=v and Settings.Visuals.FogEnd or 100000; Lighting.FogStart=0 end)
 	end)
-	local _,setVFogDist          = Slider(VisualsTab,"Fog Distance",50,2000,Settings.Visuals.FogEnd,function(v)
+	S.setVFogDist = Slider(VisualsTab,"Fog Distance",50,2000,Settings.Visuals.FogEnd,function(v)
 		Settings.Visuals.FogEnd=v
 		if Settings.Visuals.FogEnabled then pcall(function() Lighting.FogEnd=v end) end
 	end)
 	SectionLabel(VisualsTab,"Sky / Atmosphere")
-	local _,setVSky = Toggle(VisualsTab,"Enable",Settings.Visuals.SkyEnabled,function(v)
+	S.setVSky = Toggle(VisualsTab,"Enable",Settings.Visuals.SkyEnabled,function(v)
 		Settings.Visuals.SkyEnabled=v; ApplySky()
 	end)
-	local _,setVSkyPreset = Dropdown(VisualsTab,"Preset",{"Night","DeepNight","Sunset","Fog"},
+	S.setVSkyPreset = Dropdown(VisualsTab,"Preset",{"Night","DeepNight","Sunset","Fog"},
 		Settings.Visuals.SkyPreset or "Night",function(v)
 		Settings.Visuals.SkyPreset=v
-		Settings.Visuals.SkyEnabled=true; setVSky(true); ApplySky()
+		Settings.Visuals.SkyEnabled=true; S.setVSky(true); ApplySky()
 	end)
 	Button(VisualsTab,"Apply",C.Teal,function()
-		Settings.Visuals.SkyEnabled=true; setVSky(true); ApplySky()
+		Settings.Visuals.SkyEnabled=true; S.setVSky(true); ApplySky()
 	end)
 	Button(VisualsTab,"Remove",C.Red,function()
-		Settings.Visuals.SkyEnabled=false; setVSky(false); ApplySky()
+		Settings.Visuals.SkyEnabled=false; S.setVSky(false); ApplySky()
 	end)
 	Button(VisualsTab,"Reset Lighting",C.Orange,function()
 		Settings.Visuals.Brightness=1
@@ -1735,72 +1500,232 @@ local function CreateGUI()
 		end)
 	end)
 
+	-- ===== GUI ПЛЕЙСА =====
+	local hiddenGuis  = {}
+	local dragTarget  = nil
+	local dragOffset  = Vector2.new(0,0)
+	local dragConn    = nil
+	local guiListRows = {}
+
+	local function StopDrag()
+		if dragConn then dragConn:Disconnect(); dragConn=nil end
+		dragTarget = nil
+	end
+
+	local function StartDrag(element, onStop)
+		StopDrag()
+		dragTarget = element
+		local mouse = UserInputService:GetMouseLocation()
+		local abs = element.AbsolutePosition
+		dragOffset = Vector2.new(mouse.X - abs.X, mouse.Y - abs.Y)
+		dragConn = RunService.RenderStepped:Connect(function()
+			if not dragTarget or not dragTarget.Parent then StopDrag(); if onStop then onStop() end; return end
+			local m = UserInputService:GetMouseLocation()
+			local par = dragTarget.Parent
+			if par and par:IsA("GuiObject") then
+				local pa = par.AbsolutePosition; local ps = par.AbsoluteSize
+				dragTarget.Position = UDim2.new(
+					(m.X - dragOffset.X - pa.X) / math.max(ps.X,1), 0,
+					(m.Y - dragOffset.Y - pa.Y) / math.max(ps.Y,1), 0
+				)
+			elseif par then
+				dragTarget.Position = UDim2.new(0, m.X-dragOffset.X, 0, m.Y-dragOffset.Y)
+			end
+		end)
+	end
+
+	local function RebuildGuiList(scroll, listRows)
+		for _, r in ipairs(listRows) do if r and r.Parent then r:Destroy() end end
+		table.clear(listRows)
+		local pg = LocalPlayer:FindFirstChild("PlayerGui")
+		if not pg then return end
+
+		-- Ватермарка RageVoid
+		local wmRow = Instance.new("Frame", scroll)
+		wmRow.Size = UDim2.new(1,0,0,RH); wmRow.BackgroundColor3=C.AccentBG
+		wmRow.BorderSizePixel=0; wmRow.ZIndex=24
+		Instance.new("UICorner",wmRow).CornerRadius=UDim.new(0,4)
+		local wmLbl2 = Instance.new("TextLabel",wmRow)
+		wmLbl2.Size=UDim2.new(1,-10,1,0); wmLbl2.Position=UDim2.new(0,8,0,0)
+		wmLbl2.BackgroundTransparency=1; wmLbl2.Text="⭐ Watermark  [зажми чтобы двигать]"
+		wmLbl2.TextColor3=C.Accent; wmLbl2.Font=Enum.Font.GothamSemibold
+		wmLbl2.TextSize=TSS; wmLbl2.TextXAlignment=Enum.TextXAlignment.Left; wmLbl2.ZIndex=25
+		-- Зажать = двигать, отпустить = стоп
+		wmRow.InputBegan:Connect(function(inp)
+			if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+				wmLbl2.TextColor3=C.Orange
+				StartDrag(WatermarkFrame, function() wmLbl2.TextColor3=C.Accent end)
+			end
+		end)
+		wmRow.InputEnded:Connect(function(inp)
+			if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+				StopDrag(); wmLbl2.TextColor3=C.Accent
+			end
+		end)
+		listRows[#listRows+1] = wmRow
+
+		-- ScreenGui плейса
+		for _, gui in ipairs(pg:GetChildren()) do
+			if not gui:IsA("ScreenGui") or gui.Name=="RageVoidGUI" then continue end
+
+			-- Заголовок ScreenGui (клик = скрыть/показать)
+			local guiRow = Instance.new("TextButton", scroll)
+			guiRow.Size=UDim2.new(1,0,0,RH); guiRow.BackgroundColor3=gui.Enabled and C.Row or Color3.fromRGB(40,20,20)
+			guiRow.BorderSizePixel=0; guiRow.ZIndex=24
+			guiRow.Text=" 🖥 "..gui.Name..(gui.Enabled and "" or "  [скрыт]")
+			guiRow.TextColor3=gui.Enabled and C.Text or C.Red
+			guiRow.Font=Enum.Font.GothamSemibold; guiRow.TextSize=TSS
+			guiRow.TextXAlignment=Enum.TextXAlignment.Left
+			Instance.new("UICorner",guiRow).CornerRadius=UDim.new(0,4)
+			guiRow.MouseButton1Click:Connect(function()
+				gui.Enabled = not gui.Enabled
+				guiRow.BackgroundColor3 = gui.Enabled and C.Row or Color3.fromRGB(40,20,20)
+				guiRow.TextColor3 = gui.Enabled and C.Text or C.Red
+				guiRow.Text = " 🖥 "..gui.Name..(gui.Enabled and "" or "  [скрыт]")
+				hiddenGuis[gui] = not gui.Enabled or nil
+			end)
+			listRows[#listRows+1] = guiRow
+
+			-- Дочерние Frame верхнего уровня
+			for _, child in ipairs(gui:GetChildren()) do
+				if not (child:IsA("Frame") or child:IsA("ScrollingFrame")
+					or child:IsA("ImageLabel") or child:IsA("TextLabel")
+					or child:IsA("TextButton") or child:IsA("ImageButton")) then continue end
+
+				local cRow = Instance.new("Frame", scroll)
+				cRow.Size=UDim2.new(1,0,0,RH-4); cRow.BackgroundColor3=C.SliderBG
+				cRow.BorderSizePixel=0; cRow.ZIndex=24
+				Instance.new("UICorner",cRow).CornerRadius=UDim.new(0,3)
+				local cLbl = Instance.new("TextLabel",cRow)
+				cLbl.Size=UDim2.new(1,-10,1,0); cLbl.Position=UDim2.new(0,8,0,0)
+				cLbl.BackgroundTransparency=1
+				cLbl.Text="  └ "..child.Name.." ["..child.ClassName.."]  [зажми]"
+				cLbl.TextColor3=C.Dim; cLbl.Font=Enum.Font.Gotham
+				cLbl.TextSize=TSS-1; cLbl.TextXAlignment=Enum.TextXAlignment.Left; cLbl.ZIndex=25
+
+				-- Зажать = двигать, отпустить = стоп
+				cRow.InputBegan:Connect(function(inp)
+					if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+						cLbl.TextColor3=C.Orange
+						StartDrag(child, function() cLbl.TextColor3=C.Dim end)
+					end
+				end)
+				cRow.InputEnded:Connect(function(inp)
+					if inp.UserInputType==Enum.UserInputType.MouseButton1 or inp.UserInputType==Enum.UserInputType.Touch then
+						StopDrag(); cLbl.TextColor3=C.Dim
+					end
+				end)
+				listRows[#listRows+1] = cRow
+			end
+		end
+	end
+
+	SectionLabel(GuiTab,"Элементы GUI")
+	local guiHint=Instance.new("Frame",GuiTab)
+	guiHint.Size=UDim2.new(1,0,0,16); guiHint.BackgroundColor3=C.AccentBG; guiHint.BorderSizePixel=0; guiHint.ZIndex=23
+	Instance.new("UICorner",guiHint).CornerRadius=UDim.new(0,4)
+	local guiHintLbl=Instance.new("TextLabel",guiHint)
+	guiHintLbl.Size=UDim2.new(1,-10,1,0); guiHintLbl.Position=UDim2.new(0,5,0,0)
+	guiHintLbl.BackgroundTransparency=1; guiHintLbl.Text="ScreenGui = клик скрыть  ·  Frame = зажать и двигать"
+	guiHintLbl.TextColor3=C.Accent; guiHintLbl.Font=Enum.Font.Gotham
+	guiHintLbl.TextSize=TSS-1; guiHintLbl.ZIndex=24
+
+	local guiListFrame=Instance.new("Frame",GuiTab)
+	guiListFrame.Size=UDim2.new(1,0,0,260); guiListFrame.BackgroundColor3=C.Row
+	guiListFrame.BorderSizePixel=0; guiListFrame.ZIndex=23; guiListFrame.ClipsDescendants=true
+	Instance.new("UICorner",guiListFrame).CornerRadius=UDim.new(0,4)
+	local guiScroll=Instance.new("ScrollingFrame",guiListFrame)
+	guiScroll.Size=UDim2.new(1,-4,1,-4); guiScroll.Position=UDim2.new(0,2,0,2)
+	guiScroll.BackgroundTransparency=1; guiScroll.BorderSizePixel=0
+	guiScroll.ScrollBarThickness=3; guiScroll.ScrollBarImageColor3=C.Dimmer
+	guiScroll.CanvasSize=UDim2.new(0,0,0,0); guiScroll.AutomaticCanvasSize=Enum.AutomaticSize.Y; guiScroll.ZIndex=24
+	Instance.new("UIListLayout",guiScroll).Padding=UDim.new(0,2)
+	Instance.new("UIPadding",guiScroll).PaddingTop=UDim.new(0,2)
+
+	Button(GuiTab,"Обновить список",C.Orange,function() RebuildGuiList(guiScroll,guiListRows) end)
+	Button(GuiTab,"Показать всё",C.Green,function()
+		local pg=LocalPlayer:FindFirstChild("PlayerGui"); if not pg then return end
+		for _,gui in ipairs(pg:GetChildren()) do
+			if gui:IsA("ScreenGui") and gui.Name~="RageVoidGUI" then gui.Enabled=true; hiddenGuis[gui]=nil end
+		end
+		RebuildGuiList(guiScroll,guiListRows)
+	end)
+	Button(GuiTab,"Скрыть всё",C.Red,function()
+		local pg=LocalPlayer:FindFirstChild("PlayerGui"); if not pg then return end
+		for _,gui in ipairs(pg:GetChildren()) do
+			if gui:IsA("ScreenGui") and gui.Name~="RageVoidGUI" then gui.Enabled=false; hiddenGuis[gui]=true end
+		end
+		RebuildGuiList(guiScroll,guiListRows)
+	end)
+
+	-- Автообновление при открытии таба
+	for _,t in ipairs(tabList) do
+		if t.content==GuiTab then
+			t.btn.MouseButton1Click:Connect(function() RebuildGuiList(guiScroll,guiListRows) end)
+			break
+		end
+	end
+
 	-- =====================================================================
 	-- ApplyGUI — синхронизирует все UI элементы с текущим Settings
 	-- Вызывается после Load/Import конфига
 	-- =====================================================================
 	local function ApplyGUI()
 		-- Aimbot
-		setAimbotEnabled(Settings.Aimbot.Enabled)
-		setAimbotShowFOV(Settings.Aimbot.ShowFOV)
-		setAimbotIgnoreTeam(Settings.Aimbot.IgnoreTeam)
-		setAimbotFOV(Settings.Aimbot.FOV)
-		setAimbotSmooth(Settings.Aimbot.Smoothness)
+		S.setAimbotEnabled(Settings.Aimbot.Enabled)
+		S.setAimbotShowFOV(Settings.Aimbot.ShowFOV)
+		S.setAimbotIgnoreTeam(Settings.Aimbot.IgnoreTeam)
+		S.setAimbotFOV(Settings.Aimbot.FOV)
+		S.setAimbotSmooth(Settings.Aimbot.Smoothness)
 		if FOVCircle then
 			FOVCircle.Visible = Settings.Aimbot.Enabled and Settings.Aimbot.ShowFOV
 			FOVCircle.Size = UDim2.new(0, Settings.Aimbot.FOV*2, 0, Settings.Aimbot.FOV*2)
 		end
 		-- Anti-Aim
-		setAntiAimEnabled(Settings.AntiAim.Enabled)
-		setAntiAimMode(Settings.AntiAim.Mode)
-		setAntiAimSpin(Settings.AntiAim.SpinSpeed)
-		setAntiAimStatic(Settings.AntiAim.StaticAngle)
-		setAntiAimJitter(Settings.AntiAim.JitterRange)
-		setAntiAimInterval(math.floor(Settings.AntiAim.Interval*1000))
-		-- Chams
-		setChamsEnabled(Settings.Chams.Enabled)
-		setChamsPlayers(Settings.Chams.Players)
-		setChamsNPCs(Settings.Chams.NPCs)
-		setChamsWallcheck(Settings.Chams.Wallcheck)
-		setChamsPR(Settings.Chams.PlayerR); setChamsPG(Settings.Chams.PlayerG); setChamsPB(Settings.Chams.PlayerB)
-		setChamsPWR(Settings.Chams.PlayerWallR); setChamsPWG(Settings.Chams.PlayerWallG); setChamsPWB(Settings.Chams.PlayerWallB)
-		setChamsTransp(math.floor(Settings.Chams.Transparency*100))
-		setChamsWallTransp(math.floor(Settings.Chams.WallTransparency*100))
-		if not Settings.Chams.Enabled then ClearAllChams() end
+		S.setAntiAimEnabled(Settings.AntiAim.Enabled)
+		S.setAntiAimMode(Settings.AntiAim.Mode)
+		S.setAntiAimSpin(Settings.AntiAim.SpinSpeed)
+		S.setAntiAimStatic(Settings.AntiAim.StaticAngle)
+		S.setAntiAimJitter(Settings.AntiAim.JitterRange)
+		S.setAntiAimInterval(math.floor(Settings.AntiAim.Interval*1000))
 		-- ESP
-		setESPEnabled(Settings.ESP.Enabled)
-		setESPPlayers(Settings.ESP.ShowPlayers)
-		setESPNPCs(Settings.ESP.ShowNPCs)
-		setESPCorners(Settings.ESP.ShowCorners)
-		setESPTracers(Settings.ESP.ShowTracers)
-		setESPSkeleton(Settings.ESP.ShowSkeleton)
-		setESPNames(Settings.ESP.ShowNames)
-		setESPHealth(Settings.ESP.ShowHealth)
-		setESPDistance(Settings.ESP.ShowDistance)
-		setESPWeapon(Settings.ESP.ShowWeapon)
-		setESPCornerLen(Settings.ESP.CornerLen)
-		setESPMaxDist(Settings.ESP.MaxDistance)
+		S.setESPEnabled(Settings.ESP.Enabled)
+		S.setESPPlayers(Settings.ESP.ShowPlayers)
+		S.setESPNPCs(Settings.ESP.ShowNPCs)
+		S.setESPCorners(Settings.ESP.ShowCorners)
+		S.setESPTracers(Settings.ESP.ShowTracers)
+		S.setESPSkeleton(Settings.ESP.ShowSkeleton)
+		S.setESPNames(Settings.ESP.ShowNames)
+		S.setESPHealth(Settings.ESP.ShowHealth)
+		S.setESPDistance(Settings.ESP.ShowDistance)
+		S.setESPWeapon(Settings.ESP.ShowWeapon)
+		S.setESPCornerLen(Settings.ESP.CornerLen)
+		S.setESPMaxDist(Settings.ESP.MaxDistance)
+		-- Chams
+		S.setChamsEnabled(Settings.Chams.Enabled)
+		S.setChamsPlayers(Settings.Chams.Players)
+		S.setChamsNPCs(Settings.Chams.NPCs)
+		S.setChamsWallcheck(Settings.Chams.Wallcheck)
+		S.setChamsPR(Settings.Chams.PlayerR); S.setChamsPG(Settings.Chams.PlayerG); S.setChamsPB(Settings.Chams.PlayerB)
+		S.setChamsPWR(Settings.Chams.PlayerWallR); S.setChamsPWG(Settings.Chams.PlayerWallG); S.setChamsPWB(Settings.Chams.PlayerWallB)
+		S.setChamsTransp(math.floor(Settings.Chams.Transparency*100))
+		S.setChamsWallTransp(math.floor(Settings.Chams.WallTransparency*100))
+		if not Settings.Chams.Enabled then ClearAllChams() end
 		-- Movement
-		setBhop(Settings.Movement.BunnyHop)
-		setAutoJump(Settings.Movement.AutoJump)
-		setBhopSpeed(Settings.Movement.BHopSpeed)
-		setMaxSpeed(Settings.Movement.MaxSpeed)
-		setTPTime(Settings.Teleport.TeleportTime)
-		setTPDist(Settings.Teleport.Distance)
+		S.setBhop(Settings.Movement.BunnyHop)
+		S.setAutoJump(Settings.Movement.AutoJump)
+		S.setBhopSpeed(Settings.Movement.BHopSpeed)
+		S.setMaxSpeed(Settings.Movement.MaxSpeed)
+		S.setTPTime(Settings.Teleport.TeleportTime)
+		S.setTPDist(Settings.Teleport.Distance)
 		-- FakeLag
-		setFakeLagEnabled(Settings.FakeLag.Enabled)
-		setFakeLagCube(Settings.FakeLag.ShowCube)
-		setFLDist(Settings.FakeLag.Distance)
-		setFLInterval(math.floor(Settings.FakeLag.Interval*1000))
-		-- Visuals
-		setVBrightness(Settings.Visuals.Brightness)
-		setVAmbR(Settings.Visuals.AmbientR)
-		setVAmbG(Settings.Visuals.AmbientG)
-		setVAmbB(Settings.Visuals.AmbientB)
-		setVFog(Settings.Visuals.FogEnabled)
-		setVFogDist(Settings.Visuals.FogEnd)
-		setVSky(Settings.Visuals.SkyEnabled)
-		setVSkyPreset(Settings.Visuals.SkyPreset or "Night")
+		S.setFakeLagEnabled(Settings.FakeLag.Enabled)
+		S.setFakeLagCube(Settings.FakeLag.ShowCube)
+		S.setFLDist(Settings.FakeLag.Distance)
+		S.setFLInterval(math.floor(Settings.FakeLag.Interval*1000))
+		-- SilentAim
+		S.setSilentAimEnabled(Settings.SilentAim.Enabled)
+		S.setSilentAimFOV(Settings.SilentAim.FOV)
 		-- Keybinds (кнопки в таб + значки в KBFrame)
 		for _, bind in ipairs(KEYBIND_IDS) do
 			local val = Settings.Keybinds[bind.id] or "None"
@@ -1916,7 +1841,7 @@ local function CreateGUI()
 	end
 
 	SectionLabel(ConfigTab,"Config Name")
-	local _,GetCfgName,SetCfgName,cfgInput=TextInput(ConfigTab,"Name","Enter config name...")
+	GetCfgName,SetCfgName,cfgInput = select(2, TextInput(ConfigTab,"Name","Enter config name..."))
 	SectionLabel(ConfigTab,"Actions")
 	Button(ConfigTab,"Save Config",C.Green,function()
 		local name=GetCfgName():match("^%s*(.-)%s*$")
@@ -1947,7 +1872,7 @@ local function CreateGUI()
 		RebuildCfgList(); SetStatus("Refreshed", C.Dim)
 	end)
 	SectionLabel(ConfigTab,"Export / Import")
-	local _,GetImportText,SetImportText,importInput=TextInput(ConfigTab,"Paste JSON to import","{ ... }")
+	GetImportText,SetImportText,importInput = select(2, TextInput(ConfigTab,"Paste JSON to import","{ ... }"))
 	Button(ConfigTab,"Export to Console",C.Purple,function()
 		local json,err=ConfigSystem.Export()
 		if json then print("[RageVoid Export]\n"..json); SetStatus("Exported to console (F9)", C.Green)
@@ -2006,17 +1931,25 @@ local function CreateGUI()
 		kbStroke.Color = C.AccentDim; kbStroke.Thickness = 1
 
 		keybindButtons[bindId] = KeyBtn
+		kbStrokes[bindId] = kbStroke
+
+		-- Вспомогательная функция сброса кнопки в нормальное состояние
+		local function ResetBtn(id)
+			local btn = keybindButtons[id]
+			local st  = kbStrokes[id]
+			if not btn then return end
+			local val = Settings.Keybinds[id]
+			local none = (val == "None" or val == "" or val == nil)
+			btn.Text = val or "None"
+			btn.BackgroundColor3 = C.SliderBG
+			btn.TextColor3 = none and C.Dimmer or C.Accent
+			if st then st.Color = C.AccentDim end
+		end
 
 		KeyBtn.MouseButton1Click:Connect(function()
+			-- Сбрасываем предыдущую слушающую кнопку
 			if keybindListening and keybindListening ~= bindId then
-				local prev = keybindButtons[keybindListening]
-				if prev then
-					local prevVal = Settings.Keybinds[keybindListening]
-					local prevNone = (prevVal == "None" or prevVal == "" or prevVal == nil)
-					prev.Text = prevVal or "None"
-					prev.BackgroundColor3 = C.SliderBG
-					prev.TextColor3 = prevNone and C.Dimmer or C.Accent
-				end
+				ResetBtn(keybindListening)
 			end
 			keybindListening = bindId
 			KeyBtn.Text = "[ press key ]"
@@ -2071,7 +2004,7 @@ local function CreateGUI()
 	local IT=Instance.new("TextLabel",IBox)
 	IT.Size=UDim2.new(1,-20,1,-16); IT.Position=UDim2.new(0,10,0,8)
 	IT.BackgroundTransparency=1; IT.ZIndex=24
-	IT.Text="RageVoid  |  alpha v0.9\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton, HP, names, weapon\nAimbot + Anti-Aim\nBunnyHop + Teleport\nFake Lag: forward dash, wall/air checks, cube preview\nVisuals: lighting, fog, sky\nConfig: save / load / export / import"
+	IT.Text="RageVoid  |  alpha v0.9.9\n\n[Insert]  toggle menu\nCustom keybinds in KEYBINDS tab\n\nESP: corner box, tracers, skeleton R6+R15, HP, names+role, weapon\nAimbot + Anti-Aim + Silent Aim\nBunnyHop + Teleport + Fake Lag\nVisuals: lighting, fog, sky\nGUI: скрывать/двигать элементы плейса\nConfig: save / load / export / import"
 	IT.TextColor3=C.Dim; IT.Font=Enum.Font.Gotham; IT.TextSize=8
 	IT.TextXAlignment=Enum.TextXAlignment.Left; IT.TextYAlignment=Enum.TextYAlignment.Top
 	IT.TextWrapped=true
@@ -2125,29 +2058,26 @@ UserInputService.InputBegan:Connect(function(input, gp)
 			local keyName = input.KeyCode.Name
 			local blocked = { LeftShift=true, RightShift=true, LeftControl=true,
 				RightControl=true, LeftAlt=true, RightAlt=true }
+			local listeningId = keybindListening
 			-- ESC = сбросить бинд в None
 			if input.KeyCode == Enum.KeyCode.Escape then
-				Settings.Keybinds[keybindListening] = "None"
-				local btn = keybindButtons[keybindListening]
-				if btn then
-					btn.Text = "None"
-					btn.BackgroundColor3 = C.SliderBG
-					btn.TextColor3 = C.Dimmer
-				end
-				local lbl = kbDynLabels[keybindListening]
+				Settings.Keybinds[listeningId] = "None"
+				local btn = keybindButtons[listeningId]
+				if btn then btn.Text="None"; btn.BackgroundColor3=C.SliderBG; btn.TextColor3=C.Dimmer end
+				local st = kbStrokes[listeningId]
+				if st then st.Color = C.AccentDim end
+				local lbl = kbDynLabels[listeningId]
 				if lbl then lbl.Text="None"; lbl.TextColor3=C.Dimmer; lbl.BackgroundColor3=C.Row end
 				keybindListening = nil
 				return
 			end
 			if not blocked[keyName] then
-				Settings.Keybinds[keybindListening] = keyName
-				local btn = keybindButtons[keybindListening]
-				if btn then
-					btn.Text = keyName
-					btn.BackgroundColor3 = C.SliderBG
-					btn.TextColor3 = C.Accent
-				end
-				local lbl = kbDynLabels[keybindListening]
+				Settings.Keybinds[listeningId] = keyName
+				local btn = keybindButtons[listeningId]
+				if btn then btn.Text=keyName; btn.BackgroundColor3=C.SliderBG; btn.TextColor3=C.Accent end
+				local st = kbStrokes[listeningId]
+				if st then st.Color = C.AccentDim end
+				local lbl = kbDynLabels[listeningId]
 				if lbl then lbl.Text=keyName; lbl.TextColor3=C.Accent; lbl.BackgroundColor3=C.AccentBG end
 				keybindListening = nil
 				return
@@ -2243,5 +2173,3 @@ end
 if Settings.Movement.BunnyHop then SetupBunnyHop() end
 if Settings.AntiAim.Enabled then StartAntiAim() end
 if Settings.FakeLag.Enabled then StartFakeLag() end
-
-print("RageVoid v0.9 | Dark Minimal Redesign + FakeLag + Custom Keybinds loaded")

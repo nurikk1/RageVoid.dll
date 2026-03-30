@@ -959,7 +959,7 @@ local function ShowWelcomeScreen()
 	label.Size = UDim2.new(1, 0, 1, 0)
 	label.Position = UDim2.new(0, 0, 0, 0)
 	label.BackgroundTransparency = 1
-	label.Text = "Welcome, " .. player.Name .. "to RageVoid.lua"
+	label.Text = "Welcome, " .. player.Name .. " to RageVoid.lua"
 	label.TextColor3 = Color3.new(1, 1, 1)
 	label.TextStrokeColor3 = Color3.new(0, 0, 0)
 	label.TextStrokeTransparency = 0.6
